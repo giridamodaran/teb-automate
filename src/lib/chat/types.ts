@@ -217,6 +217,7 @@ export interface QuoteViewItem {
 export interface QuoteViewLine {
   title: string;
   value: string;
+  emphasis?: boolean;
 }
 
 export interface QuoteViewTemplate {
@@ -224,6 +225,7 @@ export interface QuoteViewTemplate {
   name: string;
   isDefault: boolean;
   isSelected: boolean;
+  pdfUrl?: string;
 }
 
 export interface QuoteViewNote {

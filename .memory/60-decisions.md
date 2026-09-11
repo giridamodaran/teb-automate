@@ -1,5 +1,9 @@
 # Decisions
 
+## 2026-09-11 — Quote view shows template PDFs and a receipt-style total
+
+Ask must preview each quote template as a PDF, not as name chips. Live path is TEMPLATE `AcDownloadPdf` `SAVETEMPLATE` with `Code: TEBQuote` and `Data` JSON `{ EntityId, Module: TEBQuote, TemplateId }`. Items and price breakdown in chat are one receipt card: item name left, amount right, Total Amount emphasized. Do not rebuild the Quote composer.
+
 ## 2026-09-11 — Workforce “people started {date}” is punch-in, not joining date
 
 Ask maps `how many people started today` / `members present` / `no of people have started {date}` to the Management Dashboard Workforce card plus Workforce Day Manage. Counts: MICRO `GetOverviewWorkforceSnapshot` stages Start Day / End Day / Force End Day / Not Started. Names: `GetTrackingSummary` with `StartEventTime` / `EndEventTime` / dropdown `Id` as `UserIds`. Do not use `DateOfJoining`. Keep `joined on` / `joining date` as HR joining. Attendance/Month (`GetSubscriberUserAttendance`) is the same domain but needs `MemberIds`; day questions use tracking + snapshot.

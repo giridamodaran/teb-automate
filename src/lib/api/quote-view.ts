@@ -108,6 +108,43 @@ function moneyText(value: unknown, symbol: string): string {
   return formatAmount(n, symbol);
 }
 
+function isTotalLine(title: string): boolean {
+  return /^(grand\s*)?total(?:\s+amount)?$|amount (?:due|payable)|net (?:value|amount)|quote (?:net )?value$/i.test(
+    title.trim(),
+  );
+}
+
+export async function downloadQuoteTemplatePdf(entityId: string, templateId: string): Promise<string> {
+  if (!entityId || !templateId) return "";
+  const envelope = await tebRequest<string>("TEMPLATE", "AcDownloadPdf", {
+    method: "POST",
+    body: {
+      data: {
+        Module: "TEMPLATE",
+        Code: "TEBQuote",
+        Action: "SAVETEMPLATE",
+        PrimaryKey: "",
+        Data: JSON.stringify({ EntityId: entityId, Module: "TEBQuote", TemplateId: templateId }),
+      },
+    },
+    timeoutMs: 45000,
+  });
+  return extractPdfUrl(envelope.Value ?? envelope.value ?? envelope.Data);
+}
+
+function extractPdfUrl(raw: unknown): string {
+  const parsed = unwrapUnknown(raw);
+  if (typeof parsed === "string") {
+    const text = parsed.trim();
+    if (/^https?:\/\//i.test(text)) return text;
+    return "";
+  }
+  const obj = asRecord(parsed);
+  if (!obj) return "";
+  const nested = firstText(obj, ["Url", "FileUrl", "PdfUrl", "TemplateUrl", "Value", "Data"]);
+  return /^https?:\/\//i.test(nested) ? nested : "";
+}
+
 function qtyText(value: unknown): string {
   const n = asNumber(value);
   if (n == null) return asText(value);
@@ -319,19 +356,25 @@ function itemNamesFrom(row: Record<string, unknown>): string[] {
 }
 
 function toItems(rows: Record<string, unknown>[], symbol: string): QuoteViewItem[] {
-  return rows.map((row, index) => ({
-    id: firstText(row, ["Id", "ItemId"]) || `item-${index}`,
-    name: firstText(row, ["ItemName", "Name", "Title"]) || "Item",
-    sku: firstText(row, ["SKU", "ItemStandardCode", "ItemCode"]) || undefined,
-    quantity: qtyText(row.Quantity),
-    unit: firstText(row, ["UnitName"]) || undefined,
-    unitPrice: moneyText(row.UnitPrice ?? row.PricePerUnit, symbol),
-    discount: moneyText(row.Discount ?? row.AppliedDiscount ?? row.TotalDiscount, symbol),
-    tax: moneyText(row.Tax, symbol),
-    netAmount: moneyText(row.NetAmount ?? row.TotalAmountWithTax ?? row.TotalAmount, symbol),
-    brand: firstText(row, ["BrandName"]) || undefined,
-    category: firstText(row, ["CategoryName"]) || undefined,
-  }));
+  return rows.map((row, index) => {
+    const nested = asRecord(row.ItemPriceScheme) || asRecord(row.Item) || {};
+    return {
+      id: firstText(row, ["Id", "ItemId"]) || `item-${index}`,
+      name:
+        firstText(row, ["ItemName", "ProductName", "Name", "Title", "Description"]) ||
+        firstText(nested, ["ItemName", "Name", "Title"]) ||
+        "Item",
+      sku: firstText(row, ["SKU", "ItemStandardCode", "ItemCode"]) || firstText(nested, ["SKU", "ItemCode"]) || undefined,
+      quantity: qtyText(row.Quantity),
+      unit: firstText(row, ["UnitName"]) || undefined,
+      unitPrice: moneyText(row.UnitPrice ?? row.PricePerUnit, symbol),
+      discount: moneyText(row.Discount ?? row.AppliedDiscount ?? row.TotalDiscount, symbol),
+      tax: moneyText(row.Tax, symbol),
+      netAmount: moneyText(row.NetAmount ?? row.TotalAmountWithTax ?? row.TotalAmount, symbol),
+      brand: firstText(row, ["BrandName"]) || undefined,
+      category: firstText(row, ["CategoryName"]) || undefined,
+    };
+  });
 }
 
 function toBreakdown(
@@ -342,16 +385,22 @@ function toBreakdown(
 ): QuoteViewLine[] {
   const lines: QuoteViewLine[] = [...summary]
     .sort((a, b) => (asNumber(a.Sequence) ?? 0) - (asNumber(b.Sequence) ?? 0))
-    .map((row) => ({
-      title: firstText(row, ["Title", "Code"]) || "Total",
-      value: moneyText(row.Value, symbol),
-    }))
+    .map((row) => {
+      const title = firstText(row, ["Title", "Code"]) || "Total";
+      return {
+        title,
+        value: moneyText(row.Value, symbol),
+        emphasis: isTotalLine(title),
+      };
+    })
     .filter((row) => row.title && row.value);
   if (lines.length === 0) {
     const quoteValue = moneyText(header.QuoteValue, symbol);
     const netValue = moneyText(header.QuoteNetValue ?? header.QuoteCurrentValue, symbol);
-    if (quoteValue) lines.push({ title: "Quote value", value: quoteValue });
-    if (netValue && netValue !== quoteValue) lines.push({ title: "Net value", value: netValue });
+    if (quoteValue) lines.push({ title: "Quote value", value: quoteValue, emphasis: !netValue });
+    if (netValue && netValue !== quoteValue) lines.push({ title: "Net value", value: netValue, emphasis: true });
+  } else if (!lines.some((row) => row.emphasis)) {
+    lines[lines.length - 1] = { ...lines[lines.length - 1], emphasis: true };
   }
   for (const row of payments) {
     const title = firstText(row, ["Title", "Type"]) || "Payment";

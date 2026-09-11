@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { runReportQuestion } from "@/lib/chat/execute";
 import { isGreeting } from "@/lib/chat/parse";
 import type { ReportIntent, ReportResult } from "@/lib/chat/types";
@@ -29,7 +29,8 @@ import { sessionUserId } from "@/lib/auth/session";
 import { Icon } from "@/components/ui/Icon";
 import { ReportCharts } from "@/components/chat/ReportCharts";
 import { WorkforceMap } from "@/components/chat/WorkforceMap";
-import type { PartyCard, PartyProfile, QuoteCard, QuoteView } from "@/lib/chat/types";
+import { QuoteViewBlock } from "@/components/chat/QuoteViewBlock";
+import type { PartyCard, PartyProfile, QuoteCard } from "@/lib/chat/types";
 
 type ChatMessage =
   | { id: string; role: "user"; text: string }
@@ -210,160 +211,6 @@ function QuoteCardView({
   );
 }
 
-function QuoteSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1.5">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{title}</p>
-      {children}
-    </div>
-  );
-}
-
-function QuoteViewBlock({ view }: { view: QuoteView }) {
-  const statusBits = [view.status, view.workflow, view.closed ? "Closed" : "", view.nextStatus ? `Next: ${view.nextStatus}` : ""].filter(
-    Boolean,
-  );
-  const shownItems = view.items.slice(0, 20);
-  const shownNotes = view.notes.slice(0, 8);
-  const shownActions = view.actions.slice(0, 8);
-  return (
-    <div className="space-y-2">
-      <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <p className="text-[13px] font-semibold text-slate-900">{view.title}</p>
-            <p className="mt-0.5 text-[11px] text-slate-500">
-              {[view.code, view.company, view.contact, view.owner].filter(Boolean).join(" · ")}
-            </p>
-          </div>
-          <OpenInTeb href={view.openUrl} />
-        </div>
-        {statusBits.length ? (
-          <p className="mt-1.5 text-[12px] text-slate-700">
-            <span className="text-slate-500">Status</span> · {statusBits.join(" · ")}
-          </p>
-        ) : null}
-      </div>
-      {view.fields.length ? (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px]">
-          {view.fields.map((field) => (
-            <div key={field.label} className="contents">
-              <dt className="text-slate-500">{field.label}</dt>
-              <dd className="text-slate-800">{field.value}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
-      {view.templates.length ? (
-        <QuoteSection title="Quote templates">
-          <div className="flex flex-wrap gap-1">
-            {view.templates.map((template) => (
-              <span
-                key={template.id}
-                className={`rounded-full border px-2 py-0.5 text-[11px] ${
-                  template.isSelected
-                    ? "border-[#086fb8] bg-[#086fb8]/10 text-[#086fb8]"
-                    : "border-slate-200 bg-white text-slate-700"
-                }`}
-              >
-                {template.name}
-                {template.isDefault ? " · default" : ""}
-                {template.isSelected ? " · selected" : ""}
-              </span>
-            ))}
-          </div>
-        </QuoteSection>
-      ) : null}
-      <QuoteSection title="Items">
-        {shownItems.length ? (
-          <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="min-w-full text-left text-[11px]">
-              <thead className="bg-slate-50 text-slate-500">
-                <tr>
-                  <th className="px-2 py-1 font-medium">Item</th>
-                  <th className="px-2 py-1 font-medium">Qty</th>
-                  <th className="px-2 py-1 font-medium">Price</th>
-                  <th className="px-2 py-1 font-medium">Net</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shownItems.map((item) => (
-                  <tr key={item.id} className="border-t border-slate-100">
-                    <td className="px-2 py-1 text-slate-800">
-                      {item.name}
-                      {item.sku ? <span className="block text-slate-500">{item.sku}</span> : null}
-                    </td>
-                    <td className="px-2 py-1 tabular-nums text-slate-700">
-                      {item.quantity}
-                      {item.unit ? ` ${item.unit}` : ""}
-                    </td>
-                    <td className="px-2 py-1 tabular-nums text-slate-700">{item.unitPrice}</td>
-                    <td className="px-2 py-1 tabular-nums text-slate-800">{item.netAmount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : view.itemNames.length ? (
-          <p className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px] text-slate-700">
-            {view.itemNames.join(", ")}
-          </p>
-        ) : (
-          <p className="text-[12px] text-slate-500">No items on this quote.</p>
-        )}
-        {view.items.length > shownItems.length ? (
-          <p className="text-[11px] text-slate-500">
-            {view.items.length - shownItems.length} more items — <OpenInTeb href={view.openUrl} />
-          </p>
-        ) : null}
-      </QuoteSection>
-      {view.breakdown.length ? (
-        <QuoteSection title="Price breakdown">
-          <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px]">
-            {view.breakdown.map((line) => (
-              <div key={line.title} className="contents">
-                <dt className="text-slate-500">{line.title}</dt>
-                <dd className="tabular-nums text-slate-800">{line.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </QuoteSection>
-      ) : null}
-      <QuoteSection title="Quote notes">
-        {shownNotes.length ? (
-          <div className="space-y-1.5">
-            {shownNotes.map((note) => (
-              <div key={note.id} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px]">
-                <p className="whitespace-pre-wrap text-slate-800">{note.text}</p>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  {[note.pinned ? "Pinned" : "", note.author, note.date].filter(Boolean).join(" · ")}
-                </p>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-[12px] text-slate-500">No notes on this quote.</p>
-        )}
-      </QuoteSection>
-      <QuoteSection title="Quote actions">
-        {shownActions.length ? (
-          <div className="space-y-1">
-            {shownActions.map((action) => (
-              <div key={action.id} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px]">
-                <p className="text-slate-800">{action.type}</p>
-                {action.assignee || action.schedule ? (
-                  <p className="text-[11px] text-slate-500">{[action.assignee, action.schedule].filter(Boolean).join(" · ")}</p>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-[12px] text-slate-500">No actions on this quote.</p>
-        )}
-      </QuoteSection>
-    </div>
-  );
-}
 
 function ReportBlock({
   result,
