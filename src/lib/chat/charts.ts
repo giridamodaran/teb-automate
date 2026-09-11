@@ -1,5 +1,6 @@
 import type { ChartSeries, DatasetSummary, ReportIntent } from "@/lib/chat/types";
 import { formatAmount, mappedCurrency } from "@/lib/money";
+import { formatFriendlyDate } from "@/lib/format-date";
 
 function firstString(row: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
@@ -197,7 +198,11 @@ export function buildDatasetSummary(
         status: rowStatus(row),
         amount: rowAmt,
         amountFormatted: formatAmount(rowAmt, symbol),
-        date: date ? date.toISOString().slice(0, 10) : "",
+        date: date
+          ? formatFriendlyDate(
+              `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
+            )
+          : "",
       };
     }),
   };

@@ -25,6 +25,7 @@ import {
 import type { TebMenuApp, TebUserDetail } from "@/lib/api/types";
 import { userFacingAskError } from "@/lib/chat/user-copy";
 import { formatAmount } from "@/lib/money";
+import { formatFriendlyDate } from "@/lib/format-date";
 import { sessionUserId } from "@/lib/auth/session";
 import { Icon } from "@/components/ui/Icon";
 import { ReportCharts } from "@/components/chat/ReportCharts";
@@ -147,7 +148,7 @@ function PartyProfileView({
           {profile.fields.map((field) => (
             <div key={field.label} className="contents">
               <dt className="text-slate-500">{field.label}</dt>
-              <dd className="text-slate-800">{field.value}</dd>
+              <dd className="text-slate-800">{formatFriendlyDate(field.value)}</dd>
             </div>
           ))}
         </dl>

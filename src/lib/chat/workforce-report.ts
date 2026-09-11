@@ -21,6 +21,7 @@ import {
   type WorkforceSnapshotStage,
 } from "@/lib/api/workforce";
 import { dateWindow, startOfDay } from "@/lib/chat/date-filter";
+import { formatFriendlyDate } from "@/lib/format-date";
 import { REPORT_ENTITIES } from "@/lib/chat/entities";
 import { buildDatasetSummary, pickCharts } from "@/lib/chat/charts";
 import type { ChartSeries, MapPath, MapPin, ReportIntent, ReportResult } from "@/lib/chat/types";
@@ -77,16 +78,7 @@ function firstStringish(row: Record<string, unknown>, keys: string[]): string {
 }
 
 function formatPunchClock(raw: string): string {
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
-  return date.toLocaleString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    ...(sameDay ? {} : { day: "numeric", month: "short" }),
-  });
+  return formatFriendlyDate(raw) || raw;
 }
 
 function punchFocus(raw: string): "start" | "end" | "force" {
@@ -498,7 +490,7 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
     const summary = buildDatasetSummary(rows, rows.length, "count");
     const lines = rows
       .slice(0, 12)
-      .map((row) => `${personName(row)} — joined ${joiningDate(row) || "unknown"}`);
+      .map((row) => `${personName(row)} — joined ${formatFriendlyDate(joiningDate(row)) || "unknown"}`);
     return {
       ...emptyResult({
         text: window

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { downloadQuoteTemplatePdf } from "@/lib/api/quote-view";
+import { formatFriendlyDate } from "@/lib/format-date";
 import type { QuoteView, QuoteViewItem, QuoteViewTemplate } from "@/lib/chat/types";
 import { Icon } from "@/components/ui/Icon";
 
@@ -207,7 +208,7 @@ export function QuoteViewBlock({ view }: { view: QuoteView }) {
             {view.fields.map((field) => (
               <div key={field.label}>
                 <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{field.label}</dt>
-                <dd className="mt-0.5 text-[12px] text-slate-800">{field.value}</dd>
+                <dd className="mt-0.5 text-[12px] text-slate-800">{formatFriendlyDate(field.value)}</dd>
               </div>
             ))}
           </dl>
@@ -223,7 +224,7 @@ export function QuoteViewBlock({ view }: { view: QuoteView }) {
               <div key={note.id} className="rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-[12px]">
                 <p className="whitespace-pre-wrap leading-5 text-slate-800">{note.text}</p>
                 <p className="mt-1 text-[11px] text-slate-500">
-                  {[note.pinned ? "Pinned" : "", note.author, note.date].filter(Boolean).join(" · ")}
+                  {[note.pinned ? "Pinned" : "", note.author, note.date ? formatFriendlyDate(note.date) : ""].filter(Boolean).join(" · ")}
                 </p>
               </div>
             ))}
@@ -240,7 +241,7 @@ export function QuoteViewBlock({ view }: { view: QuoteView }) {
               <div key={action.id} className="rounded-2xl border border-slate-200 bg-white px-3.5 py-2 text-[12px]">
                 <p className="text-slate-800">{action.type}</p>
                 {action.assignee || action.schedule ? (
-                  <p className="text-[11px] text-slate-500">{[action.assignee, action.schedule].filter(Boolean).join(" · ")}</p>
+                  <p className="text-[11px] text-slate-500">{[action.assignee, action.schedule ? formatFriendlyDate(action.schedule) : ""].filter(Boolean).join(" · ")}</p>
                 ) : null}
               </div>
             ))}

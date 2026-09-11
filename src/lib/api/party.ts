@@ -2,6 +2,7 @@ import { tebRequest } from "@/lib/api/client";
 import { acGetData } from "@/lib/api/dynamic";
 import { searchCompanies, searchContacts, type LookupOption } from "@/lib/api/quote-lookups";
 import type { FilterValueRow, LiveDateFilter, PartyCard, PartyChannel, PartyProfile } from "@/lib/chat/types";
+import { formatFriendlyDate } from "@/lib/format-date";
 
 export type PartyKind = "COMPANY" | "CONTACT";
 export type { PartyCard, PartyChannel, PartyProfile };
@@ -221,7 +222,8 @@ export function toPartyProfile(row: Record<string, unknown>, kind: PartyKind, ow
   const used = new Set<string>();
   for (const field of PROFILE_FIELDS) {
     if (kind === "COMPANY" && field.label === "Company") continue;
-    const value = field.label === "Owner" ? ownerDisplayName(row, owners) : firstText(row, field.keys);
+    const raw = field.label === "Owner" ? ownerDisplayName(row, owners) : firstText(row, field.keys);
+    const value = formatFriendlyDate(raw);
     if (!value || used.has(field.label) || value === card.name) continue;
     used.add(field.label);
     fields.push({ label: field.label, value });

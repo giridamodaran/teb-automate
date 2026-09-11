@@ -12,6 +12,7 @@ import type {
   QuoteViewTemplate,
 } from "@/lib/chat/types";
 import { formatAmount, mappedCurrency } from "@/lib/money";
+import { formatFriendlyDate } from "@/lib/format-date";
 
 const QUOTE_MODULE = "TEBQuote";
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -276,7 +277,7 @@ export async function listQuoteNotes(id: string): Promise<QuoteViewNote[]> {
       id: firstText(row, ["Id", "NoteId"]) || `note-${index}`,
       text,
       author: firstText(row, ["CreatedByName", "CreatedBy", "UserName"]) || undefined,
-      date: firstText(row, ["FormattedCreatedOn", "CreatedDate", "CreatedOn"]) || undefined,
+      date: formatFriendlyDate(firstText(row, ["FormattedCreatedOn", "CreatedDate", "CreatedOn"])) || undefined,
       pinned: Boolean(row.IsPin || row.IsPinned),
     });
   }
@@ -301,7 +302,10 @@ export async function listQuoteActivity(id: string): Promise<QuoteViewAction[]> 
       id: firstText(row, ["Id"]) || `action-${index}`,
       type: firstText(row, ["Type", "ActionType", "Title", "Name"]) || "Action",
       assignee: assignee || undefined,
-      schedule: firstText(row, ["ScheduleDate", "FormattedScheduleDate", "DayType", "DueDate"]) || undefined,
+      schedule:
+        formatFriendlyDate(firstText(row, ["FormattedScheduleDate", "ScheduleDate", "DueDate"])) ||
+        firstText(row, ["DayType"]) ||
+        undefined,
     };
   });
 }
@@ -414,9 +418,9 @@ const HEADER_FIELDS: Array<{ label: string; keys: string[] }> = [
   { label: "Company", keys: ["CompanyName"] },
   { label: "Contact", keys: ["ContactName"] },
   { label: "Owner", keys: ["OwnerName"] },
-  { label: "Valid until", keys: ["ValidTill", "ValidFor", "ExpiryDate"] },
-  { label: "Created", keys: ["CreatedDate", "FormattedCreatedOn"] },
-  { label: "Modified", keys: ["ModifiedDate", "FormattedModifiedOn"] },
+  { label: "Valid until", keys: ["ValidTill", "ExpiryDate", "ValidFor"] },
+  { label: "Created", keys: ["FormattedCreatedOn", "CreatedDate"] },
+  { label: "Modified", keys: ["FormattedModifiedOn", "ModifiedDate"] },
 ];
 
 export function toQuoteView(
@@ -455,9 +459,10 @@ export function toQuoteView(
     currencySymbol: currency.symbol,
     currencyCode: currency.code,
     openUrl: quoteOpenUrl(id),
-    fields: HEADER_FIELDS.map((field) => ({ label: field.label, value: firstText(header, field.keys) })).filter(
-      (field) => field.value,
-    ),
+    fields: HEADER_FIELDS.map((field) => ({
+      label: field.label,
+      value: formatFriendlyDate(firstText(header, field.keys)),
+    })).filter((field) => field.value),
     items,
     itemNames: names,
     templates,
