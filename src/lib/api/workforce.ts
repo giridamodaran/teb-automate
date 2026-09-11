@@ -40,14 +40,49 @@ function firstString(row: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
+/** Mongo ObjectId / GUID — not a display name or street address. */
+function looksLikeRecordId(value: string): boolean {
+  const text = value.trim();
+  if (!text || /\s/.test(text)) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
+  if (/^[0-9a-f]{24}$/i.test(text)) return true;
+  return false;
+}
+
+function isPlaceholderText(value: string): boolean {
+  const text = value.trim();
+  if (!text || text === "0" || text === "0.0" || /^0+(\.0+)?$/.test(text)) return true;
+  if (looksLikeRecordId(text)) return true;
+  if (/^-?\d+(\.\d+)?$/.test(text)) return true;
+  if (/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(text)) return true;
+  return false;
+}
+
+function firstDisplayString(row: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value == null || typeof value === "object") continue;
+    const text = String(value).trim();
+    if (text && !isPlaceholderText(text)) return text;
+  }
+  return "";
+}
+
+export function isUsablePersonName(value: string): boolean {
+  const text = value.trim();
+  return Boolean(text) && text !== "Unknown" && !looksLikeRecordId(text) && text !== "0";
+}
+
+const PERSON_NAME_KEYS = ["FullName", "Text", "Name", "UserName", "DisplayName", "Label", "Title"];
+
 export function personName(row: Record<string, unknown>): string {
   const combined = [row.FirstName, row.LastName].filter(Boolean).join(" ").trim();
-  return (
-    firstString(row, ["FullName", "Text", "Name", "UserName", "DisplayName", "Title"]) ||
-    combined ||
-    firstString(row, ["Email", "Id"]) ||
-    "Unknown"
-  );
+  const named = firstDisplayString(row, PERSON_NAME_KEYS);
+  if (named) return named;
+  if (combined && isUsablePersonName(combined)) return combined;
+  const email = firstDisplayString(row, ["Email", "SubText"]);
+  if (email.includes("@")) return email;
+  return "Unknown";
 }
 
 export function personId(row: Record<string, unknown>): string {
@@ -100,11 +135,14 @@ function flattenTeam(raw: unknown, rows: Record<string, unknown>[] = []): Record
 function relabel(option: LookupOption): LookupOption {
   const extra = option.extra ?? {};
   const combined = [extra.FirstName, extra.LastName].filter(Boolean).join(" ").trim();
-  const label =
-    (combined && combined.length >= option.label.length ? combined : "") ||
-    personName({ ...extra, Id: option.id, Label: option.label }) ||
-    option.label;
-  return { ...option, label };
+  const label = personName({
+    ...extra,
+    FullName: extra.FullName,
+    Text: extra.Text,
+    Combined: combined,
+    Label: isUsablePersonName(option.label) ? option.label : "",
+  });
+  return { ...option, label: isUsablePersonName(label) ? label : isUsablePersonName(option.label) ? option.label : "Unknown" };
 }
 
 function mergePeople(groups: LookupOption[][]): LookupOption[] {
@@ -112,8 +150,15 @@ function mergePeople(groups: LookupOption[][]): LookupOption[] {
   for (const group of groups) {
     for (const raw of group) {
       const option = relabel(raw);
-      if (!option.id || seen.has(option.id)) continue;
-      seen.set(option.id, option);
+      if (!option.id) continue;
+      const current = seen.get(option.id);
+      if (!current) {
+        seen.set(option.id, option);
+        continue;
+      }
+      if (!isUsablePersonName(current.label) && isUsablePersonName(option.label)) {
+        seen.set(option.id, { ...current, ...option, extra: { ...current.extra, ...option.extra } });
+      }
     }
   }
   return [...seen.values()];
@@ -186,12 +231,12 @@ export async function listMyTeam(): Promise<Record<string, unknown>[]> {
   }
   const users = await listWorkforceUsers();
   const fromUsers = users.map((option) => ({
+    ...(option.extra ?? {}),
     Id: option.id,
     UserId: option.id,
     FullName: option.label,
     Title: option.label,
     Email: option.extra?.Email ?? option.extra?.SubText,
-    ...(option.extra ?? {}),
   }));
   const seen = new Set<string>();
   const rows: Record<string, unknown>[] = [];
@@ -274,6 +319,59 @@ export async function getSignedInLastLocations(userIds: string[]): Promise<Recor
   }
 }
 
+const ADDRESS_KEYS = [
+  "CurrentAddress",
+  "StartAddress",
+  "EndAddress",
+  "Address",
+  "FormattedAddress",
+  "Location",
+  "LocationName",
+  "LastLocation",
+  "Place",
+];
+
+async function getCurrentDateTracking(userId: string, date = new Date()): Promise<Record<string, unknown> | null> {
+  if (!userId) return null;
+  try {
+    const envelope = await tebRequest<Record<string, unknown>>(
+      "MICRO",
+      `gateway/workforce/CurrentDateUserTrackingInfo?UserId=${encodeURIComponent(userId)}`,
+      { method: "POST", body: { UserId: userId, CurrentDate: date.toISOString() } },
+    );
+    const data = parseMaybeJson(envelope.Data ?? envelope.value ?? envelope.Value);
+    return asRecord(data) ?? asRows(data)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeLocationWithTracking(
+  location: Record<string, unknown> | null,
+  tracking: Record<string, unknown> | null,
+  userId: string,
+): Record<string, unknown> | null {
+  if (!location && !tracking) return null;
+  const row: Record<string, unknown> = {
+    ...(tracking ?? {}),
+    ...(location ?? {}),
+    UserId: firstString(location ?? {}, ["UserId"]) || firstString(tracking ?? {}, ["UserId"]) || userId,
+    Id: userId,
+  };
+  const name = [location, tracking]
+    .map((source) => (source ? personName(source) : ""))
+    .find((value) => isUsablePersonName(value));
+  if (name) row.FullName = name;
+  const address = locationLabel({ ...(location ?? {}), ...(tracking ?? {}), ...row });
+  if (address) row.Address = address;
+  const coords = locationCoords(location) ?? locationCoords(tracking) ?? locationCoords(row);
+  if (coords) {
+    row.Latitude = coords.lat;
+    row.Longitude = coords.lng;
+  }
+  return hasLocation(row) ? row : null;
+}
+
 function eventLocation(raw: unknown): Record<string, unknown> | null {
   const data = asRecord(parseMaybeJson(raw));
   if (!data) return null;
@@ -292,37 +390,29 @@ export async function getUserLastLocation(userId: string): Promise<Record<string
     const row = asRecord(data) ?? asRows(data)[0] ?? null;
     return row && hasLocation(row) ? row : eventLocation(data);
   };
+  let located: Record<string, unknown> | null = null;
   try {
     const envelope = await tebRequest<Record<string, unknown>>(
       "MICRO",
       `gateway/workforce/GetUserLastLocation?UserId=${encodeURIComponent(userId)}`,
     );
-    const row = read(envelope);
-    if (row) return row;
+    located = read(envelope);
   } catch {
     // POST body is the live tracking fallback.
   }
-  try {
-    const envelope = await tebRequest<Record<string, unknown>>("MICRO", "gateway/workforce/GetUserLastLocation", {
-      method: "POST",
-      body: { UserId: userId },
-    });
-    const row = read(envelope);
-    if (row) return row;
-  } catch {
-    // Today's tracking pin is the next live fallback.
+  if (!located) {
+    try {
+      const envelope = await tebRequest<Record<string, unknown>>("MICRO", "gateway/workforce/GetUserLastLocation", {
+        method: "POST",
+        body: { UserId: userId },
+      });
+      located = read(envelope);
+    } catch {
+      // Today's tracking row still has CurrentAddress / StartAddress.
+    }
   }
-  try {
-    const today = new Date().toISOString();
-    const envelope = await tebRequest<Record<string, unknown>>(
-      "MICRO",
-      `gateway/workforce/CurrentDateUserTrackingInfo?UserId=${encodeURIComponent(userId)}`,
-      { method: "POST", body: { UserId: userId, CurrentDate: today } },
-    );
-    return read(envelope);
-  } catch {
-    return null;
-  }
+  const tracking = await getCurrentDateTracking(userId);
+  return mergeLocationWithTracking(located, tracking, userId) ?? located;
 }
 
 function locationByUserId(rows: Record<string, unknown>[]): Map<string, Record<string, unknown>> {
@@ -338,19 +428,28 @@ function locationByUserId(rows: Record<string, unknown>[]): Map<string, Record<s
 export async function lastLocationsForUsers(userIds: string[]): Promise<Record<string, unknown>[]> {
   const ids = [...new Set(userIds.filter(Boolean))];
   const me = ownerFromUser(getCurrentUser())?.id;
+  const wanted = ids.length > 0 ? ids : me ? [me] : [];
   const byId = new Map<string, Record<string, unknown>>();
-  if (me) {
-    const self = await getUserLastLocation(me);
-    if (self) byId.set(me, { ...self, UserId: me, Id: me });
-  }
-  const batch = await getSignedInLastLocations(ids.length > 0 ? ids : me ? [me] : []);
+  const batch = await getSignedInLastLocations(wanted);
   for (const [id, row] of locationByUserId(batch)) byId.set(id, row);
-  const missing = (ids.length > 0 ? ids : me ? [me] : []).filter((id) => !hasLocation(byId.get(id))).slice(0, 15);
+  const missing = wanted.filter((id) => !hasLocation(byId.get(id))).slice(0, 15);
   if (missing.length > 0) {
     const found = await Promise.all(missing.map((id) => getUserLastLocation(id)));
     found.forEach((row, index) => {
       if (!row) return;
       byId.set(missing[index], { ...row, UserId: missing[index], Id: missing[index] });
+    });
+  }
+  const needAddress = [...byId.entries()]
+    .filter(([, row]) => hasLocation(row) && !locationLabel(row))
+    .map(([id]) => id)
+    .slice(0, 25);
+  if (needAddress.length > 0) {
+    const tracked = await Promise.all(needAddress.map((id) => getCurrentDateTracking(id)));
+    tracked.forEach((row, index) => {
+      const id = needAddress[index];
+      const merged = mergeLocationWithTracking(byId.get(id) ?? null, row, id);
+      if (merged) byId.set(id, merged);
     });
   }
   return [...byId.values()];
@@ -370,12 +469,12 @@ export async function getSubscriberUserDetail(userId: string): Promise<Record<st
 }
 
 export function locationLabel(row: Record<string, unknown>): string {
-  const address = firstString(row, ["Address", "Location", "LocationName", "LastLocation", "Place", "City"]);
-  if (address) return address;
-  const lat = row.Latitude ?? row.latitude;
-  const lng = row.Longitude ?? row.longitude;
-  if (lat != null && lng != null && String(lat) !== "" && String(lng) !== "") {
-    return `${lat}, ${lng}`;
+  const nested = [asRecord(row.StartCoordinate), asRecord(row.EndCoordinate), asRecord(row.MarkerOptions)].filter(
+    (value): value is Record<string, unknown> => Boolean(value),
+  );
+  for (const source of [row, ...nested]) {
+    const address = firstDisplayString(source, ADDRESS_KEYS);
+    if (address) return address;
   }
   return "";
 }
@@ -635,6 +734,23 @@ function pathPoints(raw: unknown): Array<{ lat: number; lng: number }> {
   return points;
 }
 
+function routePoint(
+  row: Record<string, unknown>,
+  kind: "start" | "end" | "pin",
+  fallbackName: string,
+): Record<string, unknown> {
+  const coords =
+    locationCoords(row) ?? locationCoords({ Latitude: row.lat ?? row.Lat, Longitude: row.lng ?? row.Lng });
+  const named = personName(row);
+  return {
+    ...row,
+    ...(coords ? { Latitude: coords.lat, Longitude: coords.lng } : {}),
+    Kind: kind,
+    FullName: isUsablePersonName(named) && named !== String(row.Id ?? "") ? named : fallbackName,
+    Address: locationLabel(row),
+  };
+}
+
 function parseRoutePayload(raw: unknown): RouteHistory {
   const parsed = parseMaybeJson(raw);
   if (Array.isArray(parsed)) {
@@ -654,6 +770,7 @@ function parseRoutePayload(raw: unknown): RouteHistory {
   const start = asRecord(data.StartCoordinate) ?? asRecord(data.start);
   const end = asRecord(data.EndCoordinate) ?? asRecord(data.end);
   const markers = asRows(data.MarkerList ?? data.Markers ?? data.markers);
+  const records = asRows(data.ListRecords ?? data.listRecords);
   const polylines = asRows(data.PolylineList ?? data.Polylines ?? data.polylines);
   const paths: RouteHistory["paths"] = [];
   for (const line of polylines) {
@@ -665,20 +782,54 @@ function parseRoutePayload(raw: unknown): RouteHistory {
       });
     }
   }
-  const pins = [...markers];
-  if (start && (locationCoords(start) || locationCoords({ Latitude: start.lat, Longitude: start.lng }))) {
-    pins.unshift({ ...start, Kind: "start", FullName: firstString(start, ["FullName", "Address"]) || "Start" });
-  }
-  if (end && (locationCoords(end) || locationCoords({ Latitude: end.lat, Longitude: end.lng }))) {
-    pins.push({ ...end, Kind: "end", FullName: firstString(end, ["FullName", "Address"]) || "End" });
-  }
+  const startPin =
+    start && (locationCoords(start) || locationCoords({ Latitude: start.lat, Longitude: start.lng }))
+      ? routePoint(start, "start", "Start")
+      : null;
+  const endPin =
+    end && (locationCoords(end) || locationCoords({ Latitude: end.lat, Longitude: end.lng }))
+      ? routePoint(end, "end", "End")
+      : null;
+  const pins = [
+    ...(startPin ? [startPin] : []),
+    ...markers.map((row) => routePoint(row, "pin", "Checkpoint")),
+    ...records.map((row) => routePoint(row, "pin", firstDisplayString(row, ["Title", "EventType"]) || "Checkpoint")),
+    ...(endPin ? [endPin] : []),
+  ];
   const distance = Number(data.DistanceInKilometers ?? data.Distance ?? data.distanceKm);
   return {
     pins,
     paths,
     distanceKm: Number.isFinite(distance) && distance > 0 ? distance : undefined,
+    start: startPin ?? start,
+    end: endPin ?? end,
+  };
+}
+
+function mergeRouteAddresses(history: RouteHistory, listRaw: unknown): RouteHistory {
+  const list = parseRoutePayload(listRaw);
+  const startAddress = locationLabel(list.start ?? {}) || locationLabel(history.start ?? {});
+  const endAddress = locationLabel(list.end ?? {}) || locationLabel(history.end ?? {});
+  const withAddress = (row: Record<string, unknown> | null | undefined, address: string, kind: "start" | "end") => {
+    if (!row) return row ?? null;
+    return { ...row, Kind: kind, FullName: kind === "start" ? "Start" : "End", Address: address || locationLabel(row) };
+  };
+  const start = withAddress(history.start ?? list.start, startAddress, "start");
+  const end = withAddress(history.end ?? list.end, endAddress, "end");
+  const fromList = list.pins.filter((pin) => pin.Kind !== "start" && pin.Kind !== "end" && locationLabel(pin));
+  return {
+    ...history,
     start,
     end,
+    pins: [
+      ...history.pins.map((pin) => {
+        if (pin.Kind === "start") return { ...pin, ...start, Kind: "start", FullName: "Start" };
+        if (pin.Kind === "end") return { ...pin, ...end, Kind: "end", FullName: "End" };
+        const address = locationLabel(pin);
+        return { ...pin, FullName: isUsablePersonName(personName(pin)) ? personName(pin) : "Checkpoint", Address: address };
+      }),
+      ...fromList,
+    ],
   };
 }
 
@@ -703,7 +854,17 @@ export async function getUserRouteHistory(userId: string, date = new Date()): Pr
       try {
         const payload = await postTrackLog(method, userId, date, wrap);
         const parsed = parseRoutePayload(payload);
-        if (parsed.pins.length > 0 || parsed.paths.length > 0 || parsed.start || parsed.end) return parsed;
+        if (parsed.pins.length > 0 || parsed.paths.length > 0 || parsed.start || parsed.end) {
+          if (!method.includes("ListView")) {
+            try {
+              const listPayload = await postTrackLog("gateway/workforce/GetUserTrackingListView", userId, date, wrap);
+              return mergeRouteAddresses(parsed, listPayload);
+            } catch {
+              return parsed;
+            }
+          }
+          return parsed;
+        }
       } catch {
         // Next live route payload shape.
       }

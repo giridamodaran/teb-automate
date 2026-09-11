@@ -5,6 +5,7 @@ import {
   getUserLastLocation,
   getUserRouteHistories,
   getWorkforceDaySnapshot,
+  isUsablePersonName,
   joiningDate,
   lastLocationsForUsers,
   listDayTracking,
@@ -48,7 +49,10 @@ const ATTENDANCE_COLUMNS = [
 
 function asPeopleRow(row: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const merged = { ...row, ...extra };
-  const name = personName(merged);
+  const nameCandidates = [extra.FullName, extra.Text, row.Text, row.FullName, personName(merged)].map((value) =>
+    String(value ?? "").trim(),
+  );
+  const name = nameCandidates.find((value) => isUsablePersonName(value)) || "Unknown";
   const started = startedDate(merged);
   const place = locationLabel(merged);
   const coords = locationCoords(merged);
@@ -56,10 +60,10 @@ function asPeopleRow(row: Record<string, unknown>, extra: Record<string, unknown
     ...merged,
     Id: personId(merged) || extra.Id || row.Id,
     FullName: name,
-    Title: extra.Title ?? row.Title ?? name,
+    Title: extra.Title ?? row.JobTitle ?? (isUsablePersonName(String(row.Title ?? "")) ? row.Title : name),
     Email: extra.Email ?? row.Email ?? row.SubText,
     Status: extra.Status ?? row.Status ?? (place || "Active"),
-    Address: place || firstStringish(merged, ["StartAddress", "Site"]),
+    Address: place || firstStringish(merged, ["StartAddress", "EndAddress", "CurrentAddress"]),
     Latitude: coords?.lat ?? merged.Latitude ?? merged.latitude,
     Longitude: coords?.lng ?? merged.Longitude ?? merged.longitude,
     CreatedDate: extra.CreatedDate ?? row.CreatedDate ?? (punchStartTime(merged) || started),
@@ -72,7 +76,7 @@ function firstStringish(row: Record<string, unknown>, keys: string[]): string {
     const value = row[key];
     if (value == null || typeof value === "object") continue;
     const text = String(value).trim();
-    if (text) return text;
+    if (text && text !== "0" && text !== "0.0" && !/^-?\d+(\.\d+)?$/.test(text)) return text;
   }
   return "";
 }
@@ -141,7 +145,9 @@ function pinsFromRows(rows: Record<string, unknown>[]): MapPin[] {
   for (const row of rows) {
     const coords = locationCoords(row);
     if (!coords) continue;
-    const label = personName(row);
+    const rawName = personName(row);
+    const label = isUsablePersonName(rawName) ? rawName : String(row.Kind === "start" ? "Start" : row.Kind === "end" ? "End" : "");
+    if (!label) continue;
     const key = `${label}:${coords.lat}:${coords.lng}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -149,7 +155,7 @@ function pinsFromRows(rows: Record<string, unknown>[]): MapPin[] {
       lat: coords.lat,
       lng: coords.lng,
       label,
-      subtitle: locationLabel(row) || `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`,
+      subtitle: locationLabel(row),
       kind: row.Kind === "start" || row.Kind === "end" ? (row.Kind as "start" | "end") : "pin",
     });
   }
@@ -189,12 +195,16 @@ async function runPresentReport(intent: ReportIntent, emptyResult: EmptyResult):
   if (intent.personName) chips.push(intent.personName);
 
   const userIds = await listTrackingUserIds();
-  const [snapshot, tracking] = await Promise.all([
+  const [snapshot, tracking, directory] = await Promise.all([
     getWorkforceDaySnapshot(from, to).catch(() => ({ total: 0, stages: [] as WorkforceSnapshotStage[] })),
     userIds.length > 0
       ? listDayTracking(from, to, userIds)
       : Promise.resolve({ rows: [] as Record<string, unknown>[], total: 0 }),
+    listTeamMembers().catch(() => [] as LookupOption[]),
   ]);
+  const namesById = new Map(
+    directory.filter((option) => isUsablePersonName(option.label)).map((option) => [option.id, option.label]),
+  );
 
   const unique = new Map<string, Record<string, unknown>>();
   for (const row of tracking.rows) {
@@ -205,15 +215,18 @@ async function runPresentReport(intent: ReportIntent, emptyResult: EmptyResult):
   let people = [...unique.values()].map((row) => {
     const start = punchStartTime(row);
     const end = punchEndTime(row);
+    const id = personId(row);
+    const directoryName = (id && namesById.get(id)) || "";
     return asPeopleRow(row, {
+      FullName: directoryName || personName(row),
       JobTitle: row.JobTitle,
-      Title: row.JobTitle || personName(row),
+      Title: row.JobTitle || directoryName || personName(row),
       Site: row.Site,
       StartDate: start,
       EndDate: end,
       Status: end ? "Ended" : start ? "Started" : "Not started",
       CreatedDate: start,
-      Address: firstStringish(row, ["StartAddress", "Site", "EndAddress"]),
+      Address: firstStringish(row, ["StartAddress", "EndAddress", "CurrentAddress", "Site"]),
     });
   });
   if (intent.personName) {
@@ -376,14 +389,13 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
     }
     const history = await getUserRouteHistories(who.id, routeDates(intent));
     const startEnd = [history.start, history.end].filter(Boolean) as Record<string, unknown>[];
-    const map = pinsFromRows([
-      ...startEnd.map((row, index) => ({
+    const map = pinsFromRows(
+      startEnd.map((row, index) => ({
         ...row,
         Kind: index === 0 ? "start" : "end",
         FullName: index === 0 ? "Start" : "End",
       })),
-      ...history.pins,
-    ]);
+    );
     const paths: MapPath[] = [...history.paths];
     if (paths.length === 0 && map.length >= 2) {
       paths.push({ points: map.map((pin) => ({ lat: pin.lat, lng: pin.lng })) });
@@ -391,6 +403,9 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
     const when = intent.date?.label || "today";
     const km = history.distanceKm != null ? ` (${history.distanceKm.toFixed(1)} km)` : "";
     const hasMap = map.length > 0 || paths.length > 0;
+    const startPlace = locationLabel(history.start ?? {});
+    const endPlace = locationLabel(history.end ?? {});
+    const routePlaces = [startPlace ? `Start: ${startPlace}` : "", endPlace ? `End: ${endPlace}` : ""].filter(Boolean);
     return {
       ...emptyResult({
         text: hasMap
@@ -398,7 +413,12 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
           : `${who.label} has no route history for ${when}.`,
         chips,
         total: map.length || paths.reduce((sum, path) => sum + path.points.length, 0),
-        rows: history.pins.slice(0, 40).map((row) => asPeopleRow(row, { FullName: who.label })),
+        rows: (history.pins.filter((row) => row.Kind === "start" || row.Kind === "end" || locationLabel(row)).length
+          ? history.pins.filter((row) => row.Kind === "start" || row.Kind === "end" || locationLabel(row))
+          : history.pins
+        )
+          .slice(0, 40)
+          .map((row) => asPeopleRow(row, { FullName: who.label })),
         columns: entity.columns,
         entity: "workforce",
         stack: "list",
@@ -409,7 +429,7 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
         applied: appliedSearch(intent, who.label),
       }),
       analysis: hasMap
-        ? `${who.label} route ${when}${km}. Start and end pins plus the tracked path.`
+        ? `${who.label} route ${when}${km}.${routePlaces.length ? ` ${routePlaces.join(" · ")}` : ""}`
         : `${who.label} has no tracked path for ${when}.`,
       charts: [],
       map,
@@ -435,16 +455,22 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
     }
     const last = await getUserLastLocation(who.id);
     const detail = (await getSubscriberUserDetail(who.id)) ?? {};
-    const row = asPeopleRow(who.extra ?? { Id: who.id, FullName: who.label }, {
+    const row = asPeopleRow(who.extra ?? { Id: who.id }, {
       ...detail,
       ...(last ?? {}),
+      Id: who.id,
+      FullName: who.label,
       Status: last ? locationLabel(last) || "Located" : "No last location",
     });
     const place = locationLabel(last ?? row);
-    const map = pinsFromRows([row]);
+    const map = pinsFromRows([{ ...row, FullName: who.label }]);
     return {
       ...emptyResult({
-        text: place ? `${who.label} was last seen at ${place}.` : `${who.label} has no last location on file.`,
+        text: place
+          ? `${who.label} was last seen at ${place}.`
+          : map.length
+            ? `${who.label} last known location is on the map.`
+            : `${who.label} has no last location on file.`,
         chips,
         total: 1,
         rows: [row],
@@ -458,7 +484,9 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
       }),
       analysis: place
         ? `${who.label} last location: ${place}.`
-        : `${who.label} is not sharing a last location right now.`,
+        : map.length
+          ? `${who.label} last known location is on the map.`
+          : `${who.label} is not sharing a last location right now.`,
       charts: [],
       map,
       mapTitle: "Last location",
@@ -467,7 +495,7 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
 
   if (topic === "joined") {
     const extras = directory.map((option) =>
-      asPeopleRow({ Id: option.id, FullName: option.label, ...(option.extra ?? {}) }),
+      asPeopleRow({ Id: option.id, ...(option.extra ?? {}) }, { FullName: option.label }),
     );
     const missing = extras.filter((row) => !joiningDate(row)).slice(0, 40);
     const fetched = await Promise.all(
@@ -520,15 +548,24 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
   const rows = selected.map((option) => {
     const extraId = String(option.extra?.UserId ?? option.extra?.MemberId ?? "");
     const last = byId.get(option.id) ?? (extraId ? byId.get(extraId) : undefined);
-    return asPeopleRow(option.extra ?? { Id: option.id, FullName: option.label }, {
+    return asPeopleRow(option.extra ?? { Id: option.id }, {
       ...(last ?? {}),
+      Id: option.id,
+      FullName: option.label,
       Status: last ? locationLabel(last) || "Signed in" : "No last location",
     });
   });
   const map = pinsFromRows(rows);
   const located = rows.filter((row) => locationLabel(row) || locationCoords(row));
-  const lines = located.slice(0, 12).map((row) => `${personName(row)} — ${locationLabel(row)}`);
-  const names = rows.slice(0, 12).map((row) => personName(row));
+  const lines = located.slice(0, 12).map((row) => {
+    const place = locationLabel(row);
+    const name = isUsablePersonName(personName(row)) ? personName(row) : String(row.FullName ?? "Unknown");
+    return place ? `${name} — ${place}` : name;
+  });
+  const names = rows
+    .slice(0, 12)
+    .map((row) => personName(row))
+    .filter((name) => isUsablePersonName(name));
   return {
     ...emptyResult({
       text: picked
@@ -561,6 +598,17 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
 }
 
 function mergeUnique(left: LookupOption[], right: LookupOption[]): LookupOption[] {
-  const seen = new Set(left.map((row) => row.id));
-  return [...left, ...right.filter((row) => row.id && !seen.has(row.id))];
+  const seen = new Map(left.map((row) => [row.id, row]));
+  for (const option of right) {
+    if (!option.id) continue;
+    const current = seen.get(option.id);
+    if (!current) {
+      seen.set(option.id, option);
+      continue;
+    }
+    if (!isUsablePersonName(current.label) && isUsablePersonName(option.label)) {
+      seen.set(option.id, { ...current, label: option.label, extra: { ...current.extra, ...option.extra } });
+    }
+  }
+  return [...seen.values()];
 }

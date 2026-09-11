@@ -1,5 +1,9 @@
 # Decisions
 
+## 2026-09-11 — Workforce Ask shows names and street addresses, not UserIds or 0/lat-long
+
+`GetUserLastLocation` / `GetSignedInUsersLastLocation` often have `Address: null` (or numeric `0`) with only Latitude/Longitude. The same-day tracking APIs already return the address: `CurrentDateUserTrackingInfo.CurrentAddress` / `StartAddress`, Day Manage `StartAddress`, and `GetUserTrackingListView` start/end `Address`. Ask must merge those fields and never display `0`, a 24-char UserId, or a coordinate pair as the person or place. Route maps use start/end pins plus the path, not MarkerList `Id` as the pin title.
+
 ## 2026-09-11 — Quote view shows template PDFs and a receipt-style total
 
 Ask must preview each quote template as a PDF, not as name chips. Live path is TEMPLATE `AcDownloadPdf` `SAVETEMPLATE` with `Code: TEBQuote` and `Data` JSON `{ EntityId, Module: TEBQuote, TemplateId }`. Items and price breakdown in chat are one receipt card: item name left, amount right, Total Amount emphasized. Do not rebuild the Quote composer.
