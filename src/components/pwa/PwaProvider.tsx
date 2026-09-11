@@ -29,9 +29,11 @@ export function PwaProvider() {
     }
     if (isStandalone() || localStorage.getItem(DISMISS_KEY) === "1") return;
     if (isIos()) {
-      setIosHint(true);
-      setVisible(true);
-      return;
+      const timer = window.setTimeout(() => {
+        setIosHint(true);
+        setVisible(true);
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
     const onPrompt = (event: Event) => {
       event.preventDefault();

@@ -33,23 +33,11 @@ Always show generic success.
 
 `[{ AppCode, AppTitle, Icon, Url, disabled, NavigationMenus: [{ menucode, title, icon, link, disabled, hidden, isdefault, children }] }]`
 
-`GetMenuDetail` is already permission-filtered. The shell must:
-- Drop `CUSTOMSIDEBAR` and disabled/empty apps
-- Show remaining apps on the dark app rail
-- Load that app’s `NavigationMenus` as child nav (nested Manage/Add/Diary/Insight)
+`GetMenuDetail` is already permission-filtered. Ask uses it to list permitted apps in the chatbot picker (`permittedApps` in `src/lib/nav/menu.ts`). There is no app rail or child nav in this clone.
 
-Default landing: first permitted app, preferring SALES / DASH `isdefault` child. Admin with ADM → that app’s landing (often `/admin/system`).
+## Ask lookups and Dynamic AcGetData
 
-Helpers: `src/lib/nav/menu.ts` (`permittedApps`, `appLandingPath`, `appForPath`).
-
-## Quote APIs (live quote remote v4.11.8.1)
-
-Full contract: [docs/quote-apis.md](../docs/quote-apis.md).
-
-Routes: `/sales/quote/manage`, `/sales/quote/addquote`, `/sales/quote/view/:id`.
-Module: `EstimationManagement` / list code `TEBQuote`. Dispatcher: `POST dynamicv4api.tebsys.com/AcGetData`.
-
-Client: `src/lib/api/quote.ts`, `src/lib/api/quote-lookups.ts`, `src/lib/api/quote-mail.ts`, `src/lib/api/quote-terms.ts`, `src/lib/api/grid-views.ts`, `src/lib/api/manage-grid.ts`. Manage Quote at `/sales/quote/manage` uses shared `ManageGrid` (list `TEBQuote`, columns from COMPANY `AcGetGridColumns`). Add Quote is a one-page composer at `/sales/quote/addquote`. Header create is DYNAMIC `AcAddDetail` with Action `ADD` (empty-state Save quote). Overflow Edit then Save posts the same `ADD` with Id set. Company is locked after create. After save, the Items grid is live `ITEMQUOTE`: ingest via catalog `DROPDOWN` + `ItemId`, persist `ADDITEM`/`ADDMULTIPLEITEM` with `PricePerUnit`, discount, and tax. A line can have multiple taxes (`Taxes[]`). Extra taxes post `ADDITEMTAX` with scalar `TaxId` (dropdown `Id`) on SalesManagement (item-grid module) then EstimationManagement. Tax master is `TAXDROPDOWN` on **EstimationManagement** (SalesManagement returns `[]`). Pricing methods come from VIEWITEM `PricingMethodDetail` as `{ Key, Value }`. Inline discount defaults to `%` and is clamped to 100% / catalog `InlineDiscount` / line amount; unit price 0 zeros both discount and tax. Status change posts `AcAddDetail` `Module: QUOTE` / `Code: QUOTESTATUS` / `Action: CHANGEQUOTESTATUS`. Quote totals are an always-visible receipt on the right of the bottom dock (Subtotal / Discount / Tax / Round off). Notes and Terms share the left dock; header icons Send email (`SENMAIL`) and View template (`EXPORTPDF` / `SAVETEMPLATE`) are permission-gated from `VIEWTOOLBAR` / `ITEMCONSUMEPERMISSION`. `/sales/quote/view/:id` is the same composer hydrated from `GETQUOTEDETAIL` / `QUOTEDETAILEDIT` plus items — live View tabs (highlights, storyboard, documents) are still out of scope.
+Ask owner/location/currency/company/item dropdowns live in `src/lib/api/quote-lookups.ts`. Filter metadata posts through `src/lib/api/dynamic.ts` (`AcGetData`). The Quote composer, mail/template/terms clients, and `docs/quote-apis.md` were removed from this clone.
 
 ## Filter APIs (two stacks — do not mix payloads)
 
@@ -87,7 +75,7 @@ Next.js `ManageGrid` / `listManageRecords` already types `filterId` / `filterVal
 
 ## Ask chatbot
 
-Shell **Ask** (`src/components/chat/ChatPanel.tsx`) is a journey, not a blank prompt.
+Shell **Ask** (`src/components/chat/ChatPanel.tsx`) is a journey, not a blank prompt. Chat answers and errors stay in everyday language (`src/lib/chat/user-copy.ts`) — never show hosts, module codes, or `Source: DYNAMIC TicketManagement MANAGE`.
 
 1. First load: “What do you want to know today?” plus chips for every app in `permittedApps()` (`GetMenuDetail`). Apps Ask cannot query yet (ADM, LOC, …) still appear, with a short not-wired note.
 2. App selected: starter questions for that app’s topics (dashboard, quote, lead, …) and a search box. Optional topic chips narrow `pathEntity` (or dashboard stack). Sticky bar shows `Sales · Quotes` and **All apps**.
@@ -107,21 +95,25 @@ Opportunity (`SalesManagement` / `TEBSale`): same combined tabs, plus **Items**.
 
 Quote (`EstimationManagement` / `TEBQuote`): Manage FILTER via `GetFilterControls` (ScreenCode `MANAGE`, then `QUOTEFILTER`). Spoken fields include owner, assignee, status/workflow, company, contact, location / billing / shipping, type, currency, quote no, valid for, dates, and the same item stack (`ITEM` / `CATEGORY` / `BRAND` / `SKU` / `MODEL`, reporting `Itemfilter`). Catalog: `ProductsManagement` `ITEM` `DROPDOWN`. Phrases: `quotes with item iPhone`, `quotes where owner = me and type = Standard`.
 
+Quote **view** (Ask, read-only): `View quote Q-1024` / `Quote profile for …` / `Open quote …`. Header `GETQUOTEDETAIL` (`Module: EstimationManagement`, `Code: QUOTE`, `Action: GETQUOTEDETAIL`; useful payload is `Value` JSON). Items + price breakdown: same dispatcher `VIEWCONSUMEDITEM` (`ItemDetail`, `TotalSummary`) — not SalesManagement (that 500s). Templates: MICRO `gateway/common/getsubscribertemplatedropdown` unwrapped `{ Module: TEBQuote, LocationId? }` (wrapping `{ data }` returned 0 rows). Notes: MICRO `GetSubscriberNotes` wrapped `{ data: { EntityId, Module: TEBQuote } }` (unwrapped 400s). Actions: `GETQUOTEACTIVITY`. Open in browser: `https://live.teb.cloud/sales/quote/view/{id}` (`NEXT_PUBLIC_TEB_LIVE_APP`). Do not post `CHANGEQUOTESTATUS` from Ask. Do not rebuild the composer.
+
 Order (`OrderManagement` / `TEBOrder`): `GetFilterControls` ScreenCode `MANAGE`, then `ORDERFILTER`. Live managefilter route is `/sales/order/managefilter` (`screen: ORDERFILTER`). Same combined tabs + item stack. Spoken extras: order no, delivery, payment, warehouse. Phrases: `orders with item iPhone`, `order no = SO-1024`.
 
 Invoice (`InvoiceManagement` / `TEBInvoice`): `GetFilterControls` ScreenCode `MANAGE`, then `INVOICEFILTER`. Live managefilter is `/finance/invoice/managefilter`. Same item stack (`Itemfilter`). Spoken extras: invoice no / bill no, due date, payment, tax. Phrases: `invoices with item iPhone`, `invoice no = INV-1024`. Receipts stay the invoice-collections path, not this list.
 
 Action (`ActionManagement` / `TEBAction`): `GetFilterControls` ScreenCode `MANAGE`, then `ACTIONFILTER`. Live managefilter is `/sales/action/managefilter` (`screen: ACTIONFILTER`, manage screen `MANAGEACTION`). Reporting fallback `GetTeamAndMemberBasedActionDetails`. Spoken extras: action type (`MASTER` `ACTIONTYPE`, not quote types), priority, title, related module. Date FieldTypes include `SCHEDULEFILTER` (`scheduledate`) and `DUEFILTER` (`duedate`) — live filter UI lists both on Action. No product `Itemfilter`. Phrases: `actions assigned to me scheduled this week`, `actions where type = Call`, `actions due last 7 days`.
 
-Service ticket (`TicketManagement` / `TEBTicket`): `GetFilterControls` ScreenCode `MANAGE`, then `TICKETFILTER` / `MANAGETICKET`. Live managefilter is `/service/ticket/managefilter` (`ScreenDetail: MANAGETICKETFILTER`). Spoken extras: ticket no, priority, ticket type (`TICKETTYPE`), asset, SLA, channel. Phrases: `service tickets where priority = High`, `ticket no = TKT-1024`.
+Service ticket (`TicketManagement` / `TEBTicket`): live `GetFilterControls` is **`ModuleCode: TEBTicket`, `ScreenCode: MANAGE`** (not `TicketManagement` — that returns “Filter form not created”). Visible tabs are Workflow + Date; ExtraApi still has Owner, Assignee, Priority (`MasterCode: TICPRI`), Type (`TICT`), Channel (`TICCHA`), Site. Ask synthesizes those ExtraApi fields as filter tabs and formats ExtraApi GET/POST params (FIXED `MasterCode`, GET query `Module=TEBTicket`). Manage list FilterValues go inside wrapped `Data` JSON; `FilterModule` 400s on tickets. Reporting `GetTeamBasedTicketDetails` is valid. Phrases: `service tickets where priority = High`, `ticket no = TKT-1024`, `service tickets created last 7 days`.
 
-Work order (`WorkOrderManagement` / `TEBWorkorder`): `GetFilterControls` ScreenCode `MANAGE`, then `WORKORDERFILTER` / `WORKORDER`. Live managefilter is `/service/workorder/managefilter` (`ScreenDetail: MANAGEWORKORDERFILTER`, `FilterScreen: WORKORDERFILTER`). Spoken extras: work order no, type (`WORKORDERTYPE`), priority, asset, SLA, channel. Phrases: `work orders assigned to me created last 7 days`, `work order no = WO-1024`, `work orders with asset Pump`.
+Work order (`WorkOrderManagement` / `TEBWorkorder`): live `GetFilterControls` is **`ModuleCode: TEBWorkorder`, `ScreenCode: MANAGE`**. Tabs: Workflow, Site, Date, plus ExtraApi Owner / Assignee / Priority / Type. Same ExtraApi param and wrapped-list FilterValues rules as tickets. Reporting `GetTeamBasedWorkorderDetails`. Phrases: `work orders assigned to me created last 7 days`, `work order no = WO-1024`, `work orders with asset Pump`.
 
 Workforce (`WorkForceManagement`): **not** Manage FILTER / `AcGetData TEBWorkforce`. Live screens: `/workforce/team` and `/workforce/route`. **Find my team** — `GetUserDropdown?Module=TEBWorkforce` (then team-member / tree fallbacks) → POST `GetSignedInUsersLastLocation` with the UserId list → last-known lat/long pins. A named user (`Where is Priya`, `Where is the user now`) — `GetUserLastLocation`. **Route** (`Show route for me`, `Route of {username}`) — POST `GetUserTrackingMapView` with `{ UserId, CurrentDate, DisplayType: STARTDAY, Accuracy: Default, Distance: Default }`, then `MarkerList` + `PolylineList` (`Path`) + start/end. Fallbacks: `GetUserTrackingListView`, `GetUserTrackingTrip`. Maps render as OSM pins + path (`ReportResult.map` / `paths`), never lat/long bar charts.
 
+Company / Contact (`BusinessContactManagement`, list modules `TEBBusiness` / `TEBPeople`): **not** Quote-style `AcGetData` `MANAGE` (that 204s here). Manage list is MICRO `gateway/Contact/GetCustomerDetail` with the paging object as the body (`Data.BusinessType` `COMPANY` | `CONTACT`, `FullTextSearch`, `FilterId`, `FilterValues`, `DateFilter`, `PageNumber`, `PageSize`, `SortColumn: modifieddate`). Search typeahead is MICRO `gateway/contact/getcustomerdetails` `{ BusinessType, SearchKeyWord, IsAll: true }` (already `searchCompanies` / `searchContacts`). Profile is Dynamic `AcGetData` `{ Module: BusinessContactManagement, Code: COMPANY|CONTACT, PrimaryKey, Action: GETCOMPANYDETAIL|GETCONTACTDETAIL }`; useful payload is `Value` JSON. Phone/email live on `PhoneDetail[]` / `EmailDetail[]` (`Title`, `Value`, `IsDefault`) plus scalars; Ask cards use `tel:` / `mailto:` like live Angular. Contact detail includes parent `CompanyId` / `CompanyName` for **view company profile**. `GetFilterControls` for `COMPANYFILTER` / `CONTACTFILTER` often returns “Filter form not created”; Ask still tries it, then synthesizes owner/location/industry/sector/source/relationship/contact type/date/workflow and refines locally. Reporting fallback `GetTeamAndMemberBasedCustomerDetails` must wrap `{ Data: { BusinessType, PageNumber, PageSize } }`. Phrases: `Companies created last 7 days`, `Search companies Acme`, `Company profile for Acme`, `Phone and email for Acme`, `What filters can I use on companies?`.
+
 Management Dashboard (`DashboardManagement` / `TEBDashboard`, `/sales/dashboard`): reporting `FilterDetail` only. Do not send Manage `FilterValues`. Toolbar chips: `DATEFILTER` (FieldType CREATED/UPDATED/CLOSED/SCHEDULE, Mode WITHIN/BETWEEN), `OWNERFILTER` (`FnGetSubscriberUsersDropdown`), assignee, workflow/stages, location sites, Itemfilter `{Items,Categories,Brands,SKUs,Models}`, `FilterId`. Team snapshot: `GetTeamBasedRecordsCount` (member drill `GetTeamAndMemberBasedRecordsCount`). Module snapshots: `GetModuleWiseOverviewDashboard` with ChartCode `LEADSNAPSHOT` / `OPPORTUNITYSNAPSHOT` / `QUOTESNAPSHOT` / `ORDERSNAPSHOT` / `INVOICESNAPSHOT` / `WORKORDERSNAPSHOT` / `ACTIONSNAPSHOT` / `WORKFORCESNAPSHOT` / `TEAMSNAPSHOT` / `MANAGEMENTSNAPSHOT`. Details: `GetTeamBasedQuoteDetails` etc. Ask phrases: `team snapshot this month`, `quote snapshot owned by me`, `what filters can I use on the dashboard?`.
 
-TREESELECT containers are live `{ SingleValue: workflowId, MultiValue: stageIds }` (also sent as Key/Values).
+TREESELECT containers are live `{ SingleValue: workflowId, MultiValue: stageIds }` (also sent as Key/Values). Ask treats **stage** and **status** as the same workflow-step filter: `Quotes in Follow Up`, `quotes in stage or status in Follow Up`, `work orders in Assign to Engineer`, `status = Open`. It loads `GetWorkflowStageTree` then per-workflow stage dropdowns, and sends those stage ids on the Workflow tab / reporting `WorkflowFilters`.
 
 Created Filter (`TabCode: DATE`, `FieldType: CREATEDFILTER` by default) modes from live date criteria:
 

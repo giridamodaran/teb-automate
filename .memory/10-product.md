@@ -9,7 +9,7 @@ TEB Cloud subscribers: sales, operations, field users, and tenant admins (`IsAdm
 1. Open `/` while logged out → redirect to `/sign-in`.
 2. Submit email + password → `GetLogin` → store JWT + user → bootstrap session → land on Ask (`/`).
 3. Forgot password → generic success message whether or not the email exists.
-4. Ask a question → live filters / reporting / workforce APIs → charts + GenAI analysis.
+4. Ask a question → live filters / reporting / company-contact / quote-view / workforce APIs → cards or charts + GenAI analysis. Quote view is read-only and links out to live TEB.
 5. Sign out → `AcLogout` then clear session.
 
 ## UX

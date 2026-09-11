@@ -1,4 +1,4 @@
-import type { DateRangeIntent, FilterCriterion, ReportIntent, ReportStack, WorkforceTopic } from "@/lib/chat/types";
+import type { DateRangeIntent, FilterCriterion, PartyTopic, QuoteTopic, ReportIntent, ReportStack, WorkforceTopic } from "@/lib/chat/types";
 import { findEntityByKeyword, type ReportEntityKey } from "@/lib/chat/entities";
 import { mergeCriteria, parseCriteria, parseItemPhrases, splitFilterValues } from "@/lib/chat/filter-fields";
 import {
@@ -140,11 +140,11 @@ function captureName(match: string | undefined): string | undefined {
 }
 
 function parseOwner(text: string): Pick<ReportIntent, "ownerMe" | "ownerName"> & { ownerNames: string[] } {
-  if (/\b(owned by me|i own|my own|mine)\b/i.test(text) || /\bmy\s+(quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?|workforce)\b/i.test(text)) {
+  if (/\b(owned by me|i own|my own|mine)\b/i.test(text) || /\bmy\s+(quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?|workforce|companies|contacts?|accounts?)\b/i.test(text)) {
     return { ownerMe: true, ownerNames: [] };
   }
   const owned = text.match(/\b(?:owned by|owner(?: is| are)?)\s+([a-z][a-z ,.'-]{1,80})/i);
-  const possessive = text.match(/\b([a-z][a-z .'-]{1,30})'s\s+(?:quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?)\b/i);
+  const possessive = text.match(/\b([a-z][a-z .'-]{1,30})'s\s+(?:quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?|companies|contacts?)\b/i);
   const names = splitFilterValues(owned?.[1] || "") || [];
   const one = captureName(possessive?.[1]);
   if (one && !names.includes(one)) names.push(one);
@@ -177,40 +177,57 @@ function parseSearch(text: string): string | undefined {
   return undefined;
 }
 
+const STAGE_TAIL =
+  /\s+(?:created|updated|modified|closed|scheduled|owned|assigned|where|and|with|this|last|today|yesterday|between)\b.*$/i;
+const STAGE_DATE_PREFIX = /^(?:the\s+)?(?:last|this|next|today|yesterday|past)\b/i;
+const STAGE_NOISE = /^(?:me|my|mine|the|a|an|or|and|stage|status|workflow|quotes?|leads?|orders?|tickets?|invoices?|opportunit(?:y|ies)|work\s*orders?|actions?)$/i;
+
+function cleanStageName(raw: string | undefined): string | undefined {
+  let value = String(raw || "")
+    .replace(/[?.!,;]+$/g, "")
+    .replace(STAGE_TAIL, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  value = value.replace(/^(?:the|a|an)\s+/i, "");
+  value = value.replace(/\s+(?:stage|status|workflow)s?$/i, "").trim();
+  if (!value || STAGE_NOISE.test(value) || STAGE_DATE_PREFIX.test(value)) return undefined;
+  if (value.length < 2 || value.length > 60) return undefined;
+  return value;
+}
+
 function parseStages(text: string): string[] {
   const names: string[] = [];
-  const skip = /^(this|last|my|the|today|yesterday|open items|\d)/i;
-  const inStage = text.match(/\b(?:in|stage|status)\s+["']?([a-z][a-z0-9 /&-]{1,40})["']?/gi);
-  if (inStage) {
-    for (const chunk of inStage) {
-      const name = chunk.replace(/^(in|stage|status)\s+/i, "").replace(/["']/g, "").trim();
-      if (name && !skip.test(name)) names.push(name);
+  const push = (raw: string | undefined) => {
+    const name = cleanStageName(raw);
+    if (name && !names.some((row) => row.toLowerCase() === name.toLowerCase())) names.push(name);
+  };
+
+  const orPhrase = text.match(/\b(?:stage or status|status or stage)\s+(?:in|is|=|:)\s+["']?([^"'?]+)["']?/i);
+  if (orPhrase) {
+    push(orPhrase[1]);
+    return names;
+  }
+
+  const patterns = [
+    /\bin\s+(?:the\s+)?(?:stage|status)\s+(?:of\s+|called\s+|named\s+)?["']?([^"'?]+?)["']?(?=\s+(?:created|updated|owned|assigned|where|and|with|this|last|today)|[?.!]*$)/gi,
+    /\b(?:where\s+)?(?:stage|status)\s*(?:=|is|are|:|in)\s+["']?([^"'?]+?)["']?(?=\s+(?:created|updated|owned|assigned|where|and|with|this|last|today)|[?.!]*$)/gi,
+    /\bin\s+(?:the\s+)?["']([^"']{2,60})["']\s+(?:stage|status)\b/gi,
+    /\bin\s+(?:the\s+)?(.{2,50}?)\s+(?:stage|status)\b/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const raw = match[1] || "";
+      if (/\b(?:stage|status|or)\b/i.test(raw) && !/follow|progress|engineer|assign/i.test(raw)) continue;
+      push(raw);
     }
   }
-  const known = [
-    "open",
-    "new",
-    "won",
-    "lost",
-    "draft",
-    "approved",
-    "rejected",
-    "sent",
-    "qualified",
-    "closed",
-    "in progress",
-    "negotiation",
-    "completed",
-    "pending",
-    "cancelled",
-    "resolved",
-    "waiting",
-  ];
-  const lower = text.toLowerCase();
-  for (const stage of known) {
-    if (new RegExp(`\\b${stage}\\b`, "i").test(lower) && !names.some((name) => name.toLowerCase() === stage)) {
-      names.push(stage);
-    }
+
+  if (names.length === 0) {
+    const trailing = text.match(
+      /\bin\s+(?:the\s+)?(?!(?:last|this|next|today|yesterday|the last|the next)\b)([A-Za-z][A-Za-z0-9 /&-]{1,50}?)(?=\s+(?:created|updated|owned|assigned|this|last|today|where)|[?.!]*$)/i,
+    );
+    const candidate = cleanStageName(trailing?.[1]);
+    if (candidate && !/^(stage|status)\b/i.test(candidate)) push(candidate);
   }
   return names;
 }
@@ -259,6 +276,107 @@ function parseWorkforce(text: string): { topic?: WorkforceTopic; personName?: st
   return {};
 }
 
+const PARTY_NAME_STOP =
+  /^(created|updated|modified|closed|owned|assigned|in|where|last|this|today|yesterday|with|by|i|my|me|the|a|an|and|or|filters?|fields?|what|which|how|many|count|list|show|find|search|view|profile|details?|phone|email|number|call|companies|company|contacts|contact|accounts|account|people)$/i;
+
+function parsePartyName(raw: string | undefined): string | undefined {
+  let value = captureName(raw);
+  if (!value) return undefined;
+  value = value
+    .replace(/\s+(?:created|updated|owned|assigned|last|this|today|where|in the|phone|email|profile|details?).*$/i, "")
+    .replace(/[?.!,;]+$/g, "")
+    .trim();
+  if (!value || PARTY_NAME_STOP.test(value.split(/\s+/)[0] || "")) return undefined;
+  if (value.length < 2 || value.length > 80) return undefined;
+  return value;
+}
+
+function parseParty(text: string): { entity?: ReportEntityKey; topic?: PartyTopic; search?: string } {
+  const other = findEntityByKeyword(text);
+  if (other && other !== "company" && other !== "contact") return {};
+
+  const hasCompany = /\b(compan(?:y|ies)|accounts?)\b/i.test(text);
+  const hasContact =
+    /\b(contacts?)\b/i.test(text) ||
+    (/\bpeople\b/i.test(text) && !/\b(people started|users started|who started|workforce)\b/i.test(text));
+  if (!hasCompany && !hasContact) {
+    const phoneOf = text.match(/\b(?:phone|e-?mail|number|call)\s+(?:of|for)\s+(.+)$/i);
+    const search = parsePartyName(phoneOf?.[1]);
+    return search ? { entity: "company", topic: "profile", search } : {};
+  }
+
+  let entity: ReportEntityKey = hasContact && !hasCompany ? "contact" : "company";
+  if (hasCompany && hasContact) {
+    entity = /\bcompany profile\b/i.test(text) ? "company" : "contact";
+  }
+
+  const isProfile = /\b(profile|details|view (the )?(company|contact|account)|phone|e-?mail|number|click to call|\bcall\b)\b/i.test(
+    text,
+  );
+  const isSearch = /\b(search|find|named|containing|lookup)\b/i.test(text);
+  const topic: PartyTopic = isProfile ? "profile" : isSearch ? "search" : "list";
+
+  const patterns = [
+    /\b(?:profile|details)\s+(?:of|for)\s+(.+)$/i,
+    /\b(?:phone|e-?mail|number|call)\s+(?:of|for)\s+(.+)$/i,
+    /\bview\s+(?:the\s+)?(?:company|contact|account)(?:\s+profile)?\s+(?:of|for)?\s*(.+)$/i,
+    /\b(?:search|find|show|list)\s+(?:the\s+)?(?:compan(?:y|ies)|contacts?|accounts?|people)\s+(?:named|called|for)?\s*(.+)$/i,
+    /\b(?:compan(?:y|ies)|contacts?|accounts?)\s+(?:named|called)\s+(.+)$/i,
+  ];
+  let search: string | undefined;
+  for (const pattern of patterns) {
+    search = parsePartyName(text.match(pattern)?.[1]);
+    if (search) break;
+  }
+  return { entity, topic, search };
+}
+
+function parseQuoteView(text: string, previous?: ReportIntent | null): { topic?: QuoteTopic; search?: string } {
+  const followUp =
+    previous?.entity === "quote" &&
+    previous.quoteTopic === "view" &&
+    /\b(link|open in (?:teb|the browser|browser)|notes|items|templates?|actions?|status|price breakdown|breakdown|same quote)\b/i.test(
+      text,
+    ) &&
+    !/\b(quotes created|how many|last \d|this month|pie|chart|snapshot|filter)\b/i.test(text);
+  if (followUp) {
+    return { topic: "view", search: previous?.search };
+  }
+
+  if (!/\b(quotes?|quotations?)\b/i.test(text) || isDashboardQuestion(text)) return {};
+
+  const isView =
+    /\b(view (the )?(quote|quotation)|quote profile|quotation profile|quote details|quotation details|open (the )?(quote|quotation)|show (the )?(quote|quotation)|quote notes|quote items|quote actions|quote templates?|price breakdown)\b/i.test(
+      text,
+    ) || /\b(view|open|show)\s+(?:the\s+)?quote\b/i.test(text);
+  if (!isView) return {};
+
+  const codeEq = text.match(
+    /\b(?:quote|quotation)\s*(?:no|number|code|#)\s*(?:=|is|:)?\s*["']?([A-Za-z0-9][A-Za-z0-9._/-]{1,40})["']?/i,
+  );
+  const codeToken = text.match(/\b([A-Za-z]{1,8}-\d{1,10})\b/);
+  const profileFor = text.match(/\b(?:quote|quotation)\s+(?:profile|details)\s+(?:of|for)\s+(.+)$/i);
+  const viewRest = text.match(
+    /\b(?:view|open|show)\s+(?:the\s+)?(?:quote|quotation)(?:\s+profile|\s+details|\s+items|\s+notes|\s+actions|\s+templates?)?\s+(?:of|for)?\s*(.+)$/i,
+  );
+
+  let search =
+    captureName(codeEq?.[1]) ||
+    captureName(codeToken?.[1]) ||
+    parsePartyName(profileFor?.[1]) ||
+    parsePartyName(viewRest?.[1]);
+  if (search) {
+    search = search
+      .replace(/^(?:no|number|code|#)\s+/i, "")
+      .replace(/\s+(?:created|updated|owned|assigned|last|this|today|where|items?|notes?|actions?|templates?).*$/i, "")
+      .trim();
+    if (/^(items?|notes?|actions?|templates?|status|profile|details|quote|quotation)$/i.test(search)) {
+      search = undefined;
+    }
+  }
+  return { topic: "view", search };
+}
+
 function parseSavedFilter(text: string): Pick<ReportIntent, "savedFilterName" | "useDefaultFilter"> {
   if (/\b(default filter|my default)\b/i.test(text)) return { useDefaultFilter: true };
   const named = text.match(/\b(?:filter named|saved filter|using filter)\s+["']?([^"']{2,60})["']?/i);
@@ -270,7 +388,7 @@ export function isGreeting(text: string): boolean {
 }
 
 export const HELP_TEXT =
-  "Ask in plain language about Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, Workforce, or the Management Dashboard.\n\nManage FILTER tabs apply to module lists. Dashboard uses reporting FilterDetail (date, owner, assignee, workflow, location, items) — not Manage FilterValues.\n\nExamples:\n• Team snapshot this month\n• Quote snapshot owned by me last 7 days\n• What filters can I use on the dashboard?\n• Find my team\n• Where is the user now\n• Show route for me\n• Leads where owner = Akash and status = Open";
+  "Ask in plain language about Companies, Contacts, Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, Workforce, or the Management Dashboard.\n\nYou can mention owner, assignee, workflow status or stage, dates, and items. Examples:\n• Companies created last 7 days\n• Company profile for Acme\n• View quote Q-1024\n• Quotes in Follow Up\n• Work orders in Assign to Engineer\n• Team snapshot this month\n• Find my team";
 
 export function parseQuestion(
   text: string,
@@ -279,13 +397,19 @@ export function parseQuestion(
 ): ReportIntent {
   const raw = text.trim();
   const workforce = parseWorkforce(raw);
-  const namedEntity = workforce.entity || findEntityByKeyword(raw);
+  const party = parseParty(raw);
+  const quote = parseQuoteView(raw, previous);
+  const namedEntity =
+    workforce.entity || findEntityByKeyword(raw) || party.entity || (quote.topic === "view" ? "quote" : undefined);
   const entity = namedEntity || pathEntity || previous?.entity;
   const standalone =
     Boolean(workforce.entity) ||
+    Boolean(party.entity) ||
+    Boolean(party.topic) ||
+    Boolean(quote.topic === "view") ||
     Boolean(findEntityByKeyword(raw)) ||
     isDashboardQuestion(raw) ||
-    /^(show|list|find|report|how many|count|chart|analyse|analyze|total|where|dashboard|snapshot|overview)\b/i.test(
+    /^(show|list|find|report|how many|count|chart|analyse|analyze|total|where|dashboard|snapshot|overview|search|view)\b/i.test(
       raw,
     );
   const base = !standalone && previous ? previous : undefined;
@@ -293,7 +417,7 @@ export function parseQuestion(
   const assignee = parseAssignee(raw);
   const date = parseDate(raw);
   const saved = parseSavedFilter(raw);
-  const search = parseSearch(raw);
+  const search = quote.search || party.search || parseSearch(raw);
   const stages = parseStages(raw);
   const workflow = raw.match(/\bworkflow\s+["']?([a-z][a-z0-9 /&-]{1,40})["']?/i);
   const chart = parseChart(raw);
@@ -334,6 +458,8 @@ export function parseQuestion(
     criteria: criteria.length > 0 ? criteria : !standalone ? base?.criteria || [] : [],
     pageSize: parsePageSize(raw),
     workforceTopic: workforce.topic || (!standalone ? base?.workforceTopic : undefined),
+    partyTopic: party.topic || (!standalone ? base?.partyTopic : undefined),
+    quoteTopic: quote.topic,
     personName: workforce.personName || (!standalone ? base?.personName : undefined),
   };
 }

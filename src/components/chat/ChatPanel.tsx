@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { runReportQuestion } from "@/lib/chat/execute";
 import { isGreeting } from "@/lib/chat/parse";
 import type { ReportIntent, ReportResult } from "@/lib/chat/types";
@@ -22,12 +22,14 @@ import {
   type JourneyTopic,
   type JourneyTopicId,
 } from "@/lib/chat/journey";
-import { TebApiError, type TebMenuApp, type TebUserDetail } from "@/lib/api/types";
+import type { TebMenuApp, TebUserDetail } from "@/lib/api/types";
+import { userFacingAskError } from "@/lib/chat/user-copy";
 import { formatAmount } from "@/lib/money";
 import { sessionUserId } from "@/lib/auth/session";
 import { Icon } from "@/components/ui/Icon";
 import { ReportCharts } from "@/components/chat/ReportCharts";
 import { WorkforceMap } from "@/components/chat/WorkforceMap";
+import type { PartyCard, PartyProfile, QuoteCard, QuoteView } from "@/lib/chat/types";
 
 type ChatMessage =
   | { id: string; role: "user"; text: string }
@@ -47,6 +49,322 @@ function nextId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function restoreJourney(userId: string): {
+  messages: ChatMessage[];
+  appCode: string | null;
+  topicId: JourneyTopicId | null;
+  intent: ReportIntent | null;
+} {
+  const empty = {
+    messages: [{ id: "welcome", role: "assistant" as const, text: HOME_PROMPT, showApps: true }] as ChatMessage[],
+    appCode: null,
+    topicId: null,
+    intent: null,
+  };
+  try {
+    const saved = readStoredJourney(userId);
+    const hasThread = Boolean(saved?.messages.some((row) => row.role === "user") || saved?.appCode);
+    if (!hasThread || !saved) return empty;
+    return {
+      messages: saved.messages.map((row) =>
+        row.role === "assistant" && (row.apps != null || row.showApps)
+          ? { ...row, role: "assistant" as const, text: row.id === "welcome" ? HOME_PROMPT : row.text, showApps: true }
+          : row,
+      ) as ChatMessage[],
+      appCode: saved.appCode,
+      topicId: saved.topicId,
+      intent: saved.intent,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function ChannelLink({ channel }: { channel: PartyCard["phones"][number] }) {
+  return (
+    <a
+      href={channel.href}
+      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-[#086fb8] hover:border-[#086fb8]"
+    >
+      <Icon name={channel.kind === "phone" ? "call" : "mail"} size={13} />
+      <span>{channel.value}</span>
+    </a>
+  );
+}
+
+function PartyCardView({
+  card,
+  busy,
+  onAsk,
+}: {
+  card: PartyCard;
+  busy: boolean;
+  onAsk: (question: string) => void;
+}) {
+  const meta = [card.subtitle, card.owner, card.location, card.industry].filter(Boolean);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+      <p className="text-[13px] font-semibold text-slate-900">{card.name}</p>
+      {meta.length ? <p className="mt-0.5 text-[11px] text-slate-500">{meta.join(" · ")}</p> : null}
+      {card.phones.length || card.emails.length ? (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {card.phones.map((channel) => (
+            <ChannelLink key={`${card.id}-p-${channel.href}`} channel={channel} />
+          ))}
+          {card.emails.map((channel) => (
+            <ChannelLink key={`${card.id}-e-${channel.href}`} channel={channel} />
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-[11px] text-slate-500">No phone or email on this record.</p>
+      )}
+      <div className="mt-1.5">
+        <Chip
+          label="View profile"
+          disabled={busy}
+          onClick={() => onAsk(`View ${card.kind} profile for ${card.name}`)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PartyProfileView({
+  profile,
+  busy,
+  onAsk,
+}: {
+  profile: PartyProfile;
+  busy: boolean;
+  onAsk: (question: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <PartyCardView card={profile} busy={busy} onAsk={onAsk} />
+      {profile.fields.length ? (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px]">
+          {profile.fields.map((field) => (
+            <div key={field.label} className="contents">
+              <dt className="text-slate-500">{field.label}</dt>
+              <dd className="text-slate-800">{field.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {profile.companyName && profile.kind === "contact" ? (
+        <Chip
+          label={`View company profile`}
+          disabled={busy}
+          onClick={() => onAsk(`View company profile for ${profile.companyName}`)}
+        />
+      ) : null}
+      {profile.related.length ? (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">People</p>
+          {profile.related.slice(0, 6).map((card) => (
+            <PartyCardView key={card.id} card={card} busy={busy} onAsk={onAsk} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OpenInTeb({ href }: { href: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-[#086fb8] hover:border-[#086fb8]"
+    >
+      <Icon name="open_in_new" size={13} />
+      Open in TEB
+    </a>
+  );
+}
+
+function QuoteCardView({
+  card,
+  busy,
+  onAsk,
+}: {
+  card: QuoteCard;
+  busy: boolean;
+  onAsk: (question: string) => void;
+}) {
+  const meta = [card.code, card.company, card.status, card.owner, card.amountFormatted].filter(Boolean);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+      <p className="text-[13px] font-semibold text-slate-900">{card.title}</p>
+      {meta.length ? <p className="mt-0.5 text-[11px] text-slate-500">{meta.join(" · ")}</p> : null}
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        <Chip
+          label="View quote"
+          disabled={busy}
+          onClick={() => onAsk(card.code ? `View quote ${card.code}` : `View quote ${card.title}`)}
+        />
+        <OpenInTeb href={card.openUrl} />
+      </div>
+    </div>
+  );
+}
+
+function QuoteSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function QuoteViewBlock({ view }: { view: QuoteView }) {
+  const statusBits = [view.status, view.workflow, view.closed ? "Closed" : "", view.nextStatus ? `Next: ${view.nextStatus}` : ""].filter(
+    Boolean,
+  );
+  const shownItems = view.items.slice(0, 20);
+  const shownNotes = view.notes.slice(0, 8);
+  const shownActions = view.actions.slice(0, 8);
+  return (
+    <div className="space-y-2">
+      <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-[13px] font-semibold text-slate-900">{view.title}</p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              {[view.code, view.company, view.contact, view.owner].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+          <OpenInTeb href={view.openUrl} />
+        </div>
+        {statusBits.length ? (
+          <p className="mt-1.5 text-[12px] text-slate-700">
+            <span className="text-slate-500">Status</span> · {statusBits.join(" · ")}
+          </p>
+        ) : null}
+      </div>
+      {view.fields.length ? (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px]">
+          {view.fields.map((field) => (
+            <div key={field.label} className="contents">
+              <dt className="text-slate-500">{field.label}</dt>
+              <dd className="text-slate-800">{field.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {view.templates.length ? (
+        <QuoteSection title="Quote templates">
+          <div className="flex flex-wrap gap-1">
+            {view.templates.map((template) => (
+              <span
+                key={template.id}
+                className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                  template.isSelected
+                    ? "border-[#086fb8] bg-[#086fb8]/10 text-[#086fb8]"
+                    : "border-slate-200 bg-white text-slate-700"
+                }`}
+              >
+                {template.name}
+                {template.isDefault ? " · default" : ""}
+                {template.isSelected ? " · selected" : ""}
+              </span>
+            ))}
+          </div>
+        </QuoteSection>
+      ) : null}
+      <QuoteSection title="Items">
+        {shownItems.length ? (
+          <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <table className="min-w-full text-left text-[11px]">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="px-2 py-1 font-medium">Item</th>
+                  <th className="px-2 py-1 font-medium">Qty</th>
+                  <th className="px-2 py-1 font-medium">Price</th>
+                  <th className="px-2 py-1 font-medium">Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shownItems.map((item) => (
+                  <tr key={item.id} className="border-t border-slate-100">
+                    <td className="px-2 py-1 text-slate-800">
+                      {item.name}
+                      {item.sku ? <span className="block text-slate-500">{item.sku}</span> : null}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums text-slate-700">
+                      {item.quantity}
+                      {item.unit ? ` ${item.unit}` : ""}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums text-slate-700">{item.unitPrice}</td>
+                    <td className="px-2 py-1 tabular-nums text-slate-800">{item.netAmount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : view.itemNames.length ? (
+          <p className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px] text-slate-700">
+            {view.itemNames.join(", ")}
+          </p>
+        ) : (
+          <p className="text-[12px] text-slate-500">No items on this quote.</p>
+        )}
+        {view.items.length > shownItems.length ? (
+          <p className="text-[11px] text-slate-500">
+            {view.items.length - shownItems.length} more items — <OpenInTeb href={view.openUrl} />
+          </p>
+        ) : null}
+      </QuoteSection>
+      {view.breakdown.length ? (
+        <QuoteSection title="Price breakdown">
+          <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px]">
+            {view.breakdown.map((line) => (
+              <div key={line.title} className="contents">
+                <dt className="text-slate-500">{line.title}</dt>
+                <dd className="tabular-nums text-slate-800">{line.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </QuoteSection>
+      ) : null}
+      <QuoteSection title="Quote notes">
+        {shownNotes.length ? (
+          <div className="space-y-1.5">
+            {shownNotes.map((note) => (
+              <div key={note.id} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px]">
+                <p className="whitespace-pre-wrap text-slate-800">{note.text}</p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {[note.pinned ? "Pinned" : "", note.author, note.date].filter(Boolean).join(" · ")}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-slate-500">No notes on this quote.</p>
+        )}
+      </QuoteSection>
+      <QuoteSection title="Quote actions">
+        {shownActions.length ? (
+          <div className="space-y-1">
+            {shownActions.map((action) => (
+              <div key={action.id} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px]">
+                <p className="text-slate-800">{action.type}</p>
+                {action.assignee || action.schedule ? (
+                  <p className="text-[11px] text-slate-500">{[action.assignee, action.schedule].filter(Boolean).join(" · ")}</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-slate-500">No actions on this quote.</p>
+        )}
+      </QuoteSection>
+    </div>
+  );
+}
+
 function ReportBlock({
   result,
   busy,
@@ -56,12 +374,16 @@ function ReportBlock({
   busy: boolean;
   onChip: (chip: string) => void;
 }) {
+  const showCharts =
+    !result.quoteView &&
+    !result.partyProfile &&
+    !((result.map && result.map.length > 0) || (result.paths && result.paths.length > 0));
   return (
     <div className="mt-2 space-y-2">
       {result.chips.length > 0 ? (
         <div className="flex flex-wrap gap-1">
           {result.chips.map((chip) =>
-            /^(list|count|dashboard|value \(sum\))$/i.test(chip) ? (
+            /^(records|count|dashboard|total value|search|profile|view)$/i.test(chip) ? (
               <span key={chip} className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] text-slate-600">
                 {chip}
               </span>
@@ -71,7 +393,7 @@ function ReportBlock({
           )}
         </div>
       ) : null}
-      {result.metric === "value" ? (
+      {result.quoteView ? null : result.metric === "value" ? (
         <p className="text-lg font-semibold tabular-nums text-slate-900">
           {formatAmount(result.amount, result.currencySymbol)}
           <span className="ml-2 text-xs font-normal text-slate-500">
@@ -81,11 +403,28 @@ function ReportBlock({
       ) : result.total > 0 ? (
         <p className="text-lg font-semibold tabular-nums text-slate-900">{result.total.toLocaleString()}</p>
       ) : null}
+      {result.quoteView ? (
+        <QuoteViewBlock view={result.quoteView} />
+      ) : result.quoteCards?.length ? (
+        <div className="space-y-1.5">
+          {result.quoteCards.map((card) => (
+            <QuoteCardView key={card.id} card={card} busy={busy} onAsk={onChip} />
+          ))}
+        </div>
+      ) : result.partyProfile ? (
+        <PartyProfileView profile={result.partyProfile} busy={busy} onAsk={onChip} />
+      ) : result.partyCards?.length ? (
+        <div className="space-y-1.5">
+          {result.partyCards.map((card) => (
+            <PartyCardView key={card.id} card={card} busy={busy} onAsk={onChip} />
+          ))}
+        </div>
+      ) : null}
       {(result.map && result.map.length > 0) || (result.paths && result.paths.length > 0) ? (
         <WorkforceMap pins={result.map ?? []} paths={result.paths} title={result.mapTitle} />
-      ) : (
+      ) : showCharts ? (
         <ReportCharts charts={result.charts} />
-      )}
+      ) : null}
       {result.analysis ? (
         <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2 text-[12px] leading-5 text-slate-700">
           <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Analysis</p>
@@ -121,7 +460,7 @@ function Chip({
 }
 
 export function ChatPanel({ user, menu }: { user: TebUserDetail | null; menu: TebMenuApp[] }) {
-  const apps = useMemo(() => journeysForUser(menu, user), [menu, user]);
+  const apps = useMemo(() => journeysForUser(menu), [menu]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [appCode, setAppCode] = useState<string | null>(null);
@@ -144,34 +483,15 @@ export function ChatPanel({ user, menu }: { user: TebUserDetail | null; menu: Te
   }, []);
 
   useEffect(() => {
-    setHydrated(false);
-    try {
-      const saved = readStoredJourney(userId);
-      const hasThread = Boolean(saved?.messages.some((row) => row.role === "user") || saved?.appCode);
-      if (hasThread && saved) {
-        setMessages(
-          saved.messages.map((row) =>
-            row.role === "assistant" && (row.apps != null || row.showApps)
-              ? { ...row, role: "assistant" as const, text: row.id === "welcome" ? HOME_PROMPT : row.text, showApps: true }
-              : row,
-          ) as ChatMessage[],
-        );
-        setAppCode(saved.appCode);
-        setTopicId(saved.topicId);
-        intentRef.current = saved.intent;
-      } else {
-        intentRef.current = null;
-        setAppCode(null);
-        setTopicId(null);
-        setMessages([{ id: "welcome", role: "assistant", text: HOME_PROMPT, showApps: true }]);
-      }
-    } catch {
-      intentRef.current = null;
-      setAppCode(null);
-      setTopicId(null);
-      setMessages([{ id: "welcome", role: "assistant", text: HOME_PROMPT, showApps: true }]);
-    }
-    setHydrated(true);
+    const next = restoreJourney(userId);
+    const frame = window.requestAnimationFrame(() => {
+      intentRef.current = next.intent;
+      setMessages(next.messages);
+      setAppCode(next.appCode);
+      setTopicId(next.topicId);
+      setHydrated(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [userId]);
 
   useEffect(() => {
@@ -342,7 +662,7 @@ export function ChatPanel({ user, menu }: { user: TebUserDetail | null; menu: Te
       applyJourney(intent);
       setMessages((current) => [...current, { id: nextId(), role: "assistant", text: result.text, result }]);
     } catch (err) {
-      const message = err instanceof TebApiError ? err.message : "Could not run that report.";
+      const message = userFacingAskError(err);
       setMessages((current) => [...current, { id: nextId(), role: "assistant", text: message }]);
     } finally {
       setBusy(false);

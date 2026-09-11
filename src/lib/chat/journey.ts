@@ -1,4 +1,4 @@
-import type { TebMenuApp, TebMenuItem, TebUserDetail } from "@/lib/api/types";
+import type { TebMenuApp, TebMenuItem } from "@/lib/api/types";
 import { SESSION_KEYS, askJourneyStorageKey } from "@/lib/auth/session";
 import { entityFromPath, REPORT_ENTITIES, type ReportEntityKey } from "@/lib/chat/entities";
 import type { ReportIntent, ReportResult } from "@/lib/chat/types";
@@ -32,8 +32,9 @@ const TOPIC_QUESTIONS: Record<JourneyTopicId, string[]> = {
   ],
   quote: [
     "Quotes created last 7 days",
+    "View quote …",
+    "Quotes in Follow Up",
     "Quotes I own this month",
-    "Quotes with item iPhone",
     "What filters can I use on quotes?",
   ],
   lead: [
@@ -64,7 +65,7 @@ const TOPIC_QUESTIONS: Record<JourneyTopicId, string[]> = {
   ],
   workorder: [
     "Work orders assigned to me created last 7 days",
-    "Work orders I own this month",
+    "Work orders in Assign to Engineer",
     "What filters can I use on work orders?",
   ],
   action: [
@@ -73,10 +74,20 @@ const TOPIC_QUESTIONS: Record<JourneyTopicId, string[]> = {
     "What filters can I use on actions?",
   ],
   workforce: ["Find my team", "Where is the user now", "Show route for me"],
+  company: [
+    "Companies created last 7 days",
+    "Search companies",
+    "What filters can I use on companies?",
+  ],
+  contact: [
+    "Contacts created last 7 days",
+    "Search contacts",
+    "What filters can I use on contacts?",
+  ],
 };
 
 const DEFAULT_TOPICS_BY_APP: Record<string, JourneyTopicId[]> = {
-  SALES: ["dashboard", "lead", "opportunity", "quote", "order", "action"],
+  SALES: ["dashboard", "company", "contact", "lead", "opportunity", "quote", "order", "action"],
   SERVICE: ["ticket", "workorder"],
   FINANCE: ["invoice", "receipt"],
   WFORCE: ["workforce"],
@@ -95,6 +106,8 @@ function topicFromNavItem(item: TebMenuItem): JourneyTopicId | undefined {
   if (fromPath) return fromPath;
   if (/\bdashboard\b|\bsnapshot\b/i.test(blob)) return "dashboard";
   if (/\bquote/i.test(blob)) return "quote";
+  if (/\bcompan(?:y|ies)|tebbusiness|managecomp\b/i.test(blob)) return "company";
+  if (/\bcontacts?|tebpeople|managect\b/i.test(blob)) return "contact";
   if (/\blead/i.test(blob)) return "lead";
   if (/\bopportunit|\bteb ?sale\b/i.test(blob)) return "opportunity";
   if (/\binvoice|\breceipt/i.test(blob)) return /\breceipt/i.test(blob) ? "receipt" : "invoice";
@@ -147,8 +160,8 @@ function fallbackAskApps(): AskAppJourney[] {
   }));
 }
 
-export function journeysForUser(menu: TebMenuApp[] | unknown, user: TebUserDetail | null): AskAppJourney[] {
-  const listed = permittedApps(menu, user).map((app) => {
+export function journeysForUser(menu: TebMenuApp[] | unknown): AskAppJourney[] {
+  const listed = permittedApps(menu).map((app) => {
     const found = new Set<JourneyTopicId>();
     walkTopics(app.NavigationMenus, found);
     const code = String(app.AppCode || "").toUpperCase();
@@ -228,7 +241,7 @@ export function matchTopic(app: AskAppJourney, text: string): JourneyTopic | und
 export function looksLikeSearch(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.split(/\s+/).length > 4) return true;
-  return /\b(last|this|where|how many|count|created|owned|assigned|filter|snapshot|find|show|list|with item|trend|chart|pie|team|route)\b/i.test(
+  return /\b(last|this|where|how many|count|created|owned|assigned|filter|snapshot|find|show|list|search|profile|phone|email|with item|trend|chart|pie|team|route)\b/i.test(
     trimmed,
   );
 }
@@ -294,6 +307,16 @@ function compactResult(result: ReportResult): ReportResult {
       points: path.points.slice(0, 200),
     })),
     map: (result.map ?? []).slice(0, 80),
+    quoteCards: (result.quoteCards ?? []).slice(0, 8),
+    quoteView: result.quoteView
+      ? {
+          ...result.quoteView,
+          items: result.quoteView.items.slice(0, 40),
+          notes: result.quoteView.notes.slice(0, 20),
+          actions: result.quoteView.actions.slice(0, 20),
+          templates: result.quoteView.templates.slice(0, 12),
+        }
+      : undefined,
     applied: {
       filterId: result.applied?.filterId ?? null,
       filterValues: null,

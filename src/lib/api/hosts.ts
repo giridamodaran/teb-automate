@@ -55,6 +55,18 @@ export function tebUrl(host: TebHostKey, path: string): string {
   return `${base}/${suffix}`;
 }
 
+const DEFAULT_LIVE_APP = "https://live.teb.cloud";
+
+/** Live Angular app origin. Ask is read-only; open records here, not on `/sales/...` in this clone. */
+export function liveAppOrigin(): string {
+  return envOrDefault(process.env.NEXT_PUBLIC_TEB_LIVE_APP, DEFAULT_LIVE_APP);
+}
+
+export function liveAppUrl(path: string): string {
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${liveAppOrigin()}${suffix}`;
+}
+
 export const AUTH_PATHS = {
   login: "gateway/admin/GetLogin",
   refreshToken: "gateway/admin/RefreshToken",

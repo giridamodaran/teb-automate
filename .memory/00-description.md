@@ -4,7 +4,7 @@ TEB Ask is a **login + chatbot** frontend for TEBillion’s CRM/ERP. It talks to
 
 ## Scope
 
-In scope: sign-in, session, logout, forgot-password, and the Ask chatbot (plain-language questions over live Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, and Workforce).
+In scope: sign-in, session, logout, forgot-password, and the Ask chatbot (plain-language questions over live Companies, Contacts, Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, and Workforce).
 
 Out of scope: Quote composer, manage grids, app rail, and other module screens.
 

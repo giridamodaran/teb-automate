@@ -27,13 +27,13 @@ export class ShellErrorBoundary extends Component<Props, State> {
         <div className="flex min-h-dvh items-center justify-center bg-[#f4f7fb] p-6">
           <div className="max-w-lg rounded-xl border border-red-200 bg-white p-6 text-sm text-red-700">
             <p className="font-semibold">Ask could not render this screen.</p>
-            <p className="mt-2 font-mono text-xs text-slate-600">{this.state.error.message}</p>
+            <p className="mt-2 text-xs text-slate-600">Reload Ask to continue.</p>
             <button
               type="button"
               className="mt-4 rounded-md border border-slate-200 px-3 py-1.5 text-slate-700"
               onClick={() => {
                 this.setState({ error: null });
-                window.location.assign("/");
+                window.location.reload();
               }}
             >
               Reload Ask

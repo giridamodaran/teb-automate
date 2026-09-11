@@ -1,4 +1,4 @@
-import type { TebMenuApp, TebMenuItem, TebUserDetail } from "@/lib/api/types";
+import type { TebMenuApp, TebMenuItem } from "@/lib/api/types";
 import { isTruthyDisabled, normalizeAppPath, unwrapMenuList } from "@/lib/auth/session";
 
 /** Not a real product app — live UI uses this for "customize sidebar". */
@@ -50,15 +50,11 @@ const FUSE_ICON_TO_MATERIAL: Record<string, string> = {
   "support": "support_agent",
 };
 
-export function userIsAdmin(user: TebUserDetail | null): boolean {
-  return user?.IsAdmin === 1 || user?.IsAdmin === true;
-}
-
-export function asMenuItems(items: unknown): TebMenuItem[] {
+function asMenuItems(items: unknown): TebMenuItem[] {
   return Array.isArray(items) ? (items as TebMenuItem[]) : [];
 }
 
-export function isHiddenItem(item: TebMenuItem): boolean {
+function isHiddenItem(item: TebMenuItem): boolean {
   return isTruthyDisabled(item.disabled);
 }
 
@@ -98,7 +94,7 @@ function appMenusOf(app: TebMenuApp): TebMenuItem[] | unknown {
  * Apps the current user may open. GetMenuDetail is already permission-filtered
  * by the backend; we only drop the customize-sidebar editor entry.
  */
-export function permittedApps(menu: TebMenuApp[] | unknown, _user: TebUserDetail | null): TebMenuApp[] {
+export function permittedApps(menu: TebMenuApp[] | unknown): TebMenuApp[] {
   return asMenuApps(menu)
     .filter((app) => {
       if (!app || typeof app !== "object") return false;
@@ -115,7 +111,7 @@ export function permittedApps(menu: TebMenuApp[] | unknown, _user: TebUserDetail
     }));
 }
 
-export function fuseIconToMaterial(icon?: string | null): string {
+function fuseIconToMaterial(icon?: string | null): string {
   if (!icon) return "circle";
   const raw = icon.includes(":") ? (icon.split(":").pop() ?? "") : icon;
   const slug = raw.trim().replace(/_/g, "-").toLowerCase();
@@ -130,20 +126,6 @@ export function appIconName(app: TebMenuApp): string {
   return fuseIconToMaterial(app.Icon) === "circle" ? "apps" : fuseIconToMaterial(app.Icon);
 }
 
-export function itemIconName(item: TebMenuItem): string {
-  return fuseIconToMaterial(item.icon);
-}
-
-export function itemKey(item: TebMenuItem, fallback: string): string {
-  return `${fallback}:${item.menucode || item.id || item.link || item.title || "item"}`;
-}
-
-export function isActionItem(item: TebMenuItem): boolean {
-  if (item.type === "action") return true;
-  const title = (item.title ?? "").trim();
-  return /^add(\s|$)/i.test(title);
-}
-
 export function collectItemLinks(item: TebMenuItem): string[] {
   const links: string[] = [];
   if (item.link) links.push(normalizeAppPath(item.link));
@@ -151,92 +133,4 @@ export function collectItemLinks(item: TebMenuItem): string[] {
     links.push(...collectItemLinks(child));
   }
   return links;
-}
-
-export function collectAppLinks(app: TebMenuApp): string[] {
-  const links: string[] = [];
-  if (app.Url) links.push(normalizeAppPath(app.Url));
-  for (const item of visibleNavItems(app.NavigationMenus)) {
-    links.push(...collectItemLinks(item));
-  }
-  return [...new Set(links)].filter((link) => link !== "/");
-}
-
-export function firstItemLink(item: TebMenuItem): string | null {
-  if (item.link) return normalizeAppPath(item.link);
-  for (const child of visibleNavItems(item.children)) {
-    const nested = firstItemLink(child);
-    if (nested) return nested;
-  }
-  return null;
-}
-
-export function appLandingPath(app: TebMenuApp): string {
-  const items = visibleNavItems(app.NavigationMenus);
-  const dash = items.find((item) => item.menucode === "DASH");
-  const defaultChild = dash?.children?.find((child) => child.isdefault === 1 || child.isdefault === true);
-  if (defaultChild?.link) return normalizeAppPath(defaultChild.link);
-  if (dash?.link) return normalizeAppPath(dash.link);
-  for (const item of items) {
-    const link = firstItemLink(item);
-    if (link) return link;
-  }
-  if (app.Url) return normalizeAppPath(app.Url);
-  return "/";
-}
-
-export function defaultPermittedLandingPath(
-  user: TebUserDetail | null,
-  menu: TebMenuApp[],
-): string {
-  const apps = permittedApps(menu, user);
-  if (userIsAdmin(user)) {
-    const admin = apps.find((app) => app.AppCode === "ADM");
-    if (admin) return appLandingPath(admin);
-  }
-  const sales = apps.find((app) => app.AppCode === "SALES");
-  const primary = sales ?? apps[0];
-  return primary ? appLandingPath(primary) : "/";
-}
-
-function longestMatchingLink(links: string[], pathname: string): string | null {
-  return (
-    links
-      .filter((link) => pathname === link || pathname.startsWith(`${link}/`))
-      .sort((a, b) => b.length - a.length)[0] ?? null
-  );
-}
-
-export function appForPath(pathname: string, apps: TebMenuApp[]): TebMenuApp | null {
-  const ranked = apps
-    .map((app) => {
-      const match = longestMatchingLink(collectAppLinks(app), pathname);
-      return { app, score: match?.length ?? 0 };
-    })
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score);
-
-  return ranked[0]?.app ?? apps[0] ?? null;
-}
-
-export function sectionMatchesPath(item: TebMenuItem, pathname: string): boolean {
-  return longestMatchingLink(collectItemLinks(item).filter((link) => link !== "/"), pathname) != null;
-}
-
-export function linkMatchesPath(pathname: string, link?: string | null): boolean {
-  const href = link ? normalizeAppPath(link) : "";
-  if (!href || href === "/") return false;
-  return pathname === href || pathname.startsWith(`${href}/`);
-}
-
-export function sectionForPath(pathname: string, app: TebMenuApp | null): TebMenuItem | null {
-  if (!app) return null;
-  const ranked = visibleNavItems(app.NavigationMenus)
-    .map((item) => {
-      const match = longestMatchingLink(collectItemLinks(item).filter((link) => link !== "/"), pathname);
-      return { item, score: match?.length ?? 0 };
-    })
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score);
-  return ranked[0]?.item ?? null;
 }

@@ -8,7 +8,7 @@
 
 ## This frontend
 
-Next.js App Router. In the browser the UI calls same-origin `/teb-api/{host}/…`, which the Next server proxies to tebsys. That is required for a published HTTPS origin (CORS on tebsys only allow-lists localhost:3000). `/api/ask/analyze` stays on the Next server (OpenAI/Anthropic keys).
+Next.js App Router. In the browser the UI calls same-origin `/teb-api/{host}/…`, which the Next server proxies to tebsys. Unauthenticated proxy use is limited to GetLogin and forgot-password. `/api/ask/analyze` stays on the Next server (OpenAI/Anthropic keys) and requires a Bearer JWT.
 
 ## Session keys (parity with live)
 

@@ -1,4 +1,4 @@
-import type { DateFieldType, DateMode, DatePeriodType, DateRangeIntent, LiveDateFilter } from "@/lib/chat/types";
+import type { DateFieldType, DatePeriodType, DateRangeIntent, LiveDateFilter } from "@/lib/chat/types";
 
 export function startOfDay(date: Date): Date {
   const next = new Date(date);

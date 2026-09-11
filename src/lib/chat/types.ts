@@ -8,9 +8,13 @@ export type ReportEntityKey =
   | "workorder"
   | "workforce"
   | "action"
-  | "receipt";
+  | "receipt"
+  | "company"
+  | "contact";
 
 export type WorkforceTopic = "team" | "location" | "route" | "started";
+export type PartyTopic = "list" | "profile" | "search";
+export type QuoteTopic = "list" | "view";
 
 export type ReportStack = "list" | "count" | "dashboard";
 export type ReportMetric = "count" | "value";
@@ -80,6 +84,8 @@ export interface ReportIntent {
   criteria: FilterCriterion[];
   pageSize: number;
   workforceTopic?: WorkforceTopic;
+  partyTopic?: PartyTopic;
+  quoteTopic?: QuoteTopic;
   personName?: string;
 }
 
@@ -156,6 +162,108 @@ export interface ReportingFilterDetail {
   Apps: unknown[];
 }
 
+export interface PartyChannel {
+  kind: "phone" | "email";
+  title: string;
+  value: string;
+  href: string;
+}
+
+export interface PartyCard {
+  id: string;
+  kind: "company" | "contact";
+  name: string;
+  subtitle?: string;
+  owner?: string;
+  location?: string;
+  industry?: string;
+  phones: PartyChannel[];
+  emails: PartyChannel[];
+}
+
+export interface PartyProfile extends PartyCard {
+  fields: Array<{ label: string; value: string }>;
+  related: PartyCard[];
+  companyId?: string;
+  companyName?: string;
+}
+
+export interface QuoteCard {
+  id: string;
+  title: string;
+  code: string;
+  company?: string;
+  contact?: string;
+  owner?: string;
+  status?: string;
+  amountFormatted?: string;
+  openUrl: string;
+}
+
+export interface QuoteViewItem {
+  id: string;
+  name: string;
+  sku?: string;
+  quantity: string;
+  unit?: string;
+  unitPrice: string;
+  discount: string;
+  tax: string;
+  netAmount: string;
+  brand?: string;
+  category?: string;
+}
+
+export interface QuoteViewLine {
+  title: string;
+  value: string;
+}
+
+export interface QuoteViewTemplate {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  isSelected: boolean;
+}
+
+export interface QuoteViewNote {
+  id: string;
+  text: string;
+  author?: string;
+  date?: string;
+  pinned?: boolean;
+}
+
+export interface QuoteViewAction {
+  id: string;
+  type: string;
+  assignee?: string;
+  schedule?: string;
+}
+
+export interface QuoteView {
+  id: string;
+  title: string;
+  code: string;
+  company?: string;
+  contact?: string;
+  owner?: string;
+  status?: string;
+  workflow?: string;
+  nextStatus?: string;
+  closed?: boolean;
+  currencySymbol: string;
+  currencyCode: string;
+  openUrl: string;
+  fields: Array<{ label: string; value: string }>;
+  items: QuoteViewItem[];
+  itemNames: string[];
+  templates: QuoteViewTemplate[];
+  notes: QuoteViewNote[];
+  actions: QuoteViewAction[];
+  breakdown: QuoteViewLine[];
+}
+
 export interface ReportColumn {
   key: string;
   title: string;
@@ -214,6 +322,10 @@ export interface ReportResult {
   summary?: DatasetSummary;
   entity?: ReportEntityKey;
   stack: ReportStack;
+  partyCards?: PartyCard[];
+  partyProfile?: PartyProfile;
+  quoteCards?: QuoteCard[];
+  quoteView?: QuoteView;
   viewHref?: (row: Record<string, unknown>) => string | null;
   suggestions?: string[];
   applied: {

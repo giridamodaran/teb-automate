@@ -46,12 +46,12 @@ function PieChart({ series }: { series: ChartSeries }) {
   const cx = 70;
   const cy = 70;
   const r = 58;
-  let angle = -Math.PI / 2;
-  const slices = series.points.map((point, index) => {
+  const slices = series.points.reduce<
+    Array<{ path: string; color: string; label: string; value: number; angle: number }>
+  >((acc, point, index) => {
+    const start = acc.length ? acc[acc.length - 1].angle : -Math.PI / 2;
     const slice = (point.value / total) * Math.PI * 2;
-    const start = angle;
-    const end = angle + slice;
-    angle = end;
+    const end = start + slice;
     const large = slice > Math.PI ? 1 : 0;
     const path = [
       `M ${cx} ${cy}`,
@@ -59,8 +59,9 @@ function PieChart({ series }: { series: ChartSeries }) {
       `A ${r} ${r} 0 ${large} 1 ${cx + r * Math.cos(end)} ${cy + r * Math.sin(end)}`,
       "Z",
     ].join(" ");
-    return { path, color: PALETTE[index % PALETTE.length], label: point.label, value: point.value };
-  });
+    acc.push({ path, color: PALETTE[index % PALETTE.length], label: point.label, value: point.value, angle: end });
+    return acc;
+  }, []);
   return (
     <div className="flex items-center gap-3">
       <svg viewBox="0 0 140 140" className="h-36 w-36 shrink-0" role="img" aria-label={series.title}>

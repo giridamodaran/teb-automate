@@ -49,9 +49,9 @@ export default function SignInPage() {
       router.replace(next);
     } catch (err) {
       const message =
-        err instanceof TebApiError
-          ? err.message
-          : err instanceof Error && err.message
+        err instanceof TebApiError && err.status === 401
+          ? "Incorrect username or password"
+          : err instanceof TebApiError && err.message && err.message.length < 160 && !/correlation|https?:|\.env|\{/i.test(err.message)
             ? err.message
             : "Unable to sign in. Try again.";
       setError(message);

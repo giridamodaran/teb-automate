@@ -6,7 +6,7 @@ import { ChatPanel } from "@/components/chat/ChatPanel";
 import { IconLabel } from "@/components/ui/Icon";
 import { ShellErrorBoundary } from "@/components/shell/ShellErrorBoundary";
 
-export function AppShell({ children: _children }: { children: React.ReactNode }) {
+export function AppShell() {
   const { user, menu, displayName, signOut, ready } = useAuth();
   const askMenu = menu.length > 0 ? menu : getMenu();
 

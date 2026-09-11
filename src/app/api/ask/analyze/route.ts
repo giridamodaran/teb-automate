@@ -1,7 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { DatasetSummary } from "@/lib/chat/types";
+import { decodeJwtPayload, isTokenExpired } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
+
+const MAX_QUESTION = 2000;
+const MAX_SAMPLE = 12;
+const MAX_BUCKET = 12;
+const MAX_HISTORY = 8;
+
+function hasAskSession(request: NextRequest): boolean {
+  const header = request.headers.get("authorization") || "";
+  const token = header.replace(/^Bearer\s+/i, "").trim();
+  if (!token || !decodeJwtPayload(token) || isTokenExpired(token)) return false;
+  return true;
+}
 
 function formatMoney(value: number, symbol: string): string {
   const number = (Number.isFinite(value) ? value : 0).toLocaleString(undefined, {
@@ -12,8 +25,8 @@ function formatMoney(value: number, symbol: string): string {
 }
 
 function bucket(points: Array<{ label: string; value: number }>, summary: DatasetSummary) {
-  return points.map((point) => ({
-    label: point.label,
+  return points.slice(0, MAX_BUCKET).map((point) => ({
+    label: String(point.label ?? "").slice(0, 80),
     value: summary.metric === "value" ? formatMoney(point.value, summary.currencySymbol) : point.value,
   }));
 }
@@ -28,15 +41,15 @@ function analysisPayload(summary: DatasetSummary) {
     totalRecords: summary.total,
     shown: summary.shown,
     amount: formatMoney(summary.amount, symbol),
-    byStatus: bucket(summary.byStatus, summary),
-    byOwner: bucket(summary.byOwner, summary),
-    byMonth: bucket(summary.byMonth, summary),
-    sample: summary.sample.map((row) => ({
-      title: row.title,
-      owner: row.owner,
-      status: row.status,
+    byStatus: bucket(summary.byStatus ?? [], summary),
+    byOwner: bucket(summary.byOwner ?? [], summary),
+    byMonth: bucket(summary.byMonth ?? [], summary),
+    sample: (summary.sample ?? []).slice(0, MAX_SAMPLE).map((row) => ({
+      title: String(row.title ?? "").slice(0, 160),
+      owner: String(row.owner ?? "").slice(0, 80),
+      status: String(row.status ?? "").slice(0, 80),
       amount: row.amountFormatted || formatMoney(row.amount, symbol),
-      date: row.date,
+      date: String(row.date ?? "").slice(0, 40),
     })),
   };
 }
@@ -45,7 +58,7 @@ function priorConversation(history: Array<{ role?: string; text?: string }> | un
   if (!history?.length) return "";
   const lines = history
     .filter((row) => row.text?.trim())
-    .slice(-8)
+    .slice(-MAX_HISTORY)
     .map((row) => `${row.role === "assistant" ? "Assistant" : "User"}: ${String(row.text).slice(0, 400)}`);
   if (!lines.length) return "";
   return `Prior conversation (grounding only; the dataset JSON is the source of truth):\n${lines.join("\n")}`;
@@ -61,10 +74,11 @@ function promptFor(
   return [
     "You are a TEB Cloud sales analyst. Use only the numbers in the JSON. Do not invent records.",
     "Write 4-6 sentences: what the filtered set shows, the main split, a trend if months exist, and one risk or follow-up.",
+    "Use everyday language. Never mention APIs, module codes, hosts, or internal field names.",
     `Subscriber currency is ${code} (${symbol}). Copy money strings exactly as given (they already include ${symbol}).`,
     `Never write $, USD, dollars, or US currency unless currencyCode is USD. Never invent a currency.`,
     priorConversation(history),
-    `User question: ${question}`,
+    `User question: ${question.slice(0, MAX_QUESTION)}`,
     `Dataset JSON: ${JSON.stringify(analysisPayload(summary))}`,
   ]
     .filter(Boolean)
@@ -110,8 +124,7 @@ async function openAiAnalysis(
     }),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text.slice(0, 240) || `OpenAI ${res.status}`);
+    throw new Error("Analysis provider failed");
   }
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
   return json.choices?.[0]?.message?.content?.trim() || null;
@@ -139,20 +152,27 @@ async function anthropicAnalysis(
     }),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text.slice(0, 240) || `Anthropic ${res.status}`);
+    throw new Error("Analysis provider failed");
   }
   const json = (await res.json()) as { content?: Array<{ text?: string }> };
   return json.content?.map((part) => part.text || "").join("\n").trim() || null;
 }
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json()) as {
+  if (!hasAskSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  let body: {
     question?: string;
     summary?: DatasetSummary;
     history?: Array<{ role?: string; text?: string }>;
   };
-  if (!body.question || !body.summary) {
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  if (!body.question || !body.summary || typeof body.question !== "string") {
     return NextResponse.json({ error: "question and summary are required" }, { status: 400 });
   }
   try {
@@ -160,18 +180,13 @@ export async function POST(request: NextRequest) {
       (await openAiAnalysis(body.question, body.summary, body.history)) ??
       (await anthropicAnalysis(body.question, body.summary, body.history));
     if (!raw) {
-      return NextResponse.json({
-        analysis: "",
-        provider: "none",
-        hint: "Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env.local for GenAI analysis.",
-      });
+      return NextResponse.json({ analysis: "", provider: "none" });
     }
     return NextResponse.json({
       analysis: enforceMappedCurrency(raw, body.summary),
       provider: process.env.OPENAI_API_KEY ? "openai" : "anthropic",
     });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Analysis failed";
-    return NextResponse.json({ error: message }, { status: 502 });
+  } catch {
+    return NextResponse.json({ error: "Analysis failed" }, { status: 502 });
   }
 }

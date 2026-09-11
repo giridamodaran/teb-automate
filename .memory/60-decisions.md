@@ -1,5 +1,17 @@
 # Decisions
 
+## 2026-09-11 — Quote view in Ask is read-only plus an Open-in-TEB link
+
+Do not rebuild the Quote composer in this clone. Ask quote view uses live read APIs only: Dynamic `GETQUOTEDETAIL` / `VIEWCONSUMEDITEM` / `GETQUOTEACTIVITY` (EstimationManagement), MICRO `getsubscribertemplatedropdown` (unwrapped `{ Module: TEBQuote }`) and `GetSubscriberNotes` (wrapped `{ data: { EntityId, Module: TEBQuote } }`). Open the record in the live Angular app at `https://live.teb.cloud/sales/quote/view/{id}`. Do not post `CHANGEQUOTESTATUS` or item writes from Ask.
+
+## 2026-09-11 — Company and Contact in Ask use GetCustomerDetail, not Quote MANAGE
+
+Company/Contact Ask is not a rebuilt manage grid. List is MICRO `Contact/GetCustomerDetail` (`BusinessType` COMPANY|CONTACT). Search is `contact/getcustomerdetails`. Profile is Dynamic `GETCOMPANYDETAIL` / `GETCONTACTDETAIL`. Click-to-call is `tel:` / `mailto:` from `PhoneDetail` / `EmailDetail`, matching live Angular. Do not invent a click-to-call backend. `GetFilterControls` may be empty; still accept spoken filters and refine locally.
+
+## 2026-09-11 — Remove unused Quote UI; lock the Ask proxy and GenAI route
+
+This clone is Ask-only. Quote composer, manage grid, notes/tools, and app-rail components were unused and deleted. Ask still uses `quote-lookups` and Dynamic `AcGetData` (`src/lib/api/dynamic.ts`). `/teb-api` is not an open unauthenticated proxy: only GetLogin and forgot-password skip Bearer. `/api/ask/analyze` requires a session JWT, caps payload size, and never returns provider/env errors to the browser.
+
 ## 2026-08-26 — Call live tebsys APIs; do not use teb-cloud-ui-master mocks
 
 The Angular rewrite only implements UI mocks. Real contracts live in the Fuse app at live.teb.cloud.

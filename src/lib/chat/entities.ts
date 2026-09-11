@@ -57,6 +57,7 @@ export const REPORT_ENTITIES: Record<ReportEntityKey, ReportEntity> = {
       { key: "CompanyName", title: "Company" },
       { key: "OwnerName", title: "Owner" },
       { key: "Status", title: "Status" },
+      { key: "Priority", title: "Priority" },
       { key: "CreatedDate", title: "Created", kind: "date" },
     ],
   },
@@ -149,6 +150,7 @@ export const REPORT_ENTITIES: Record<ReportEntityKey, ReportEntity> = {
       { key: "Title", title: "Title" },
       { key: "WorkOrderCode", title: "Code" },
       { key: "CompanyName", title: "Company" },
+      { key: "Priority", title: "Priority" },
       ...MONEY_COLS,
     ],
   },
@@ -209,6 +211,61 @@ export const REPORT_ENTITIES: Record<ReportEntityKey, ReportEntity> = {
       { key: "CreatedDate", title: "Created", kind: "date" },
     ],
   },
+  company: {
+    key: "company",
+    title: "Company",
+    plural: "companies",
+    keywords: [
+      "companies",
+      "company profile",
+      "company profiles",
+      "find company",
+      "search company",
+      "view company",
+      "list companies",
+      "accounts",
+    ],
+    dynamicModule: "TEBBusiness",
+    listModule: "TEBBusiness",
+    workflowModules: ["TEBContact", "TEBBusiness", "BusinessContactManagement"],
+    managePath: "/sales/company/manage",
+    viewPath: (id) => `/sales/company/view/${id}`,
+    columns: [
+      { key: "CompanyName", title: "Company" },
+      { key: "CompanyCode", title: "Code" },
+      { key: "OwnerName", title: "Owner" },
+      { key: "IndustryName", title: "Industry" },
+      { key: "LocationName", title: "Location" },
+      { key: "CreatedDate", title: "Created", kind: "date" },
+    ],
+  },
+  contact: {
+    key: "contact",
+    title: "Contact",
+    plural: "contacts",
+    keywords: [
+      "contacts",
+      "contact profile",
+      "contact profiles",
+      "find contact",
+      "search contact",
+      "view contact",
+      "list contacts",
+    ],
+    dynamicModule: "TEBPeople",
+    listModule: "TEBPeople",
+    workflowModules: ["TEBContact", "TEBPeople", "BusinessContactManagement"],
+    managePath: "/sales/contact/manage",
+    viewPath: (id) => `/sales/contact/view/${id}`,
+    columns: [
+      { key: "FullName", title: "Name" },
+      { key: "CompanyName", title: "Company" },
+      { key: "OwnerName", title: "Owner" },
+      { key: "JobTitle", title: "Job title" },
+      { key: "LocationName", title: "Location" },
+      { key: "CreatedDate", title: "Created", kind: "date" },
+    ],
+  },
 };
 
 export function entityFromPath(pathname: string): ReportEntityKey | undefined {
@@ -219,6 +276,8 @@ export function entityFromPath(pathname: string): ReportEntityKey | undefined {
     return "workforce";
   }
   if (/\/receipt\//i.test(pathname)) return "receipt";
+  if (/\/contact\//i.test(pathname)) return "contact";
+  if (/\/company\//i.test(pathname) || /\/business\//i.test(pathname)) return "company";
   if (/\/quote\//i.test(pathname)) return "quote";
   if (/\/lead\//i.test(pathname)) return "lead";
   if (/\/opportunit/i.test(pathname)) return "opportunity";

@@ -7,13 +7,14 @@ import {
   listWorkflowsForModule,
   loadExtraApiOptions,
   loadMasterByCode,
+  loadWorkflowStageTree,
   postReporting,
   searchCatalogFacet,
   searchCatalogItems,
 } from "@/lib/api/filters";
 import { listLocations, listOwners, listQuoteTypes, listCurrencies, ownerFromUser, getSubscriberUserCurrency, searchCompanies, searchContacts, type LookupOption } from "@/lib/api/quote-lookups";
+import type { TebUserDetail } from "@/lib/api/types";
 import { aliasFamily, matchTab, tabPhrases } from "@/lib/chat/filter-fields";
-import { TebApiError, type TebUserDetail } from "@/lib/api/types";
 import { REPORT_ENTITIES, type ReportEntity } from "@/lib/chat/entities";
 import { HELP_TEXT, isDashboardQuestion, isGreeting, parseQuestion } from "@/lib/chat/parse";
 import type { ChatHistoryTurn } from "@/lib/chat/journey";
@@ -28,7 +29,12 @@ import type {
   ReportingFilterDetail,
 } from "@/lib/chat/types";
 import { formatAmount } from "@/lib/money";
+import { getAccessToken } from "@/lib/auth/session";
+import { userFacingAskError } from "@/lib/chat/user-copy";
 import { runWorkforceReport } from "@/lib/chat/workforce-report";
+import { runPartyReport } from "@/lib/chat/party-report";
+import { runQuoteView } from "@/lib/chat/quote-report";
+import { toQuoteCard } from "@/lib/api/quote-view";
 import {
   DASHBOARD_COLUMNS,
   DASHBOARD_SUGGESTIONS,
@@ -57,7 +63,7 @@ function emptyResult(
 }
 
 function normalize(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, " ").trim();
+  return value.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function matchLookups(options: LookupOption[], needle: string): LookupOption[] {
@@ -136,6 +142,22 @@ function multiValueRow(tab: FilterTab, ids: string[], selected?: unknown): Filte
   };
 }
 
+function valueRow(tab: FilterTab, ids: string[]): FilterValueRow {
+  if (tabType(tab) === "INPUTFIELD" || tabType(tab) === "INPUT") {
+    return {
+      TabCode: tab.Code,
+      PropertyName: tab.DbFieldName || tab.Code.toLowerCase(),
+      ControlType: "VALUE",
+      LabelName: tab.Title,
+      SingleValue: ids[0],
+      MultiValue: ids,
+      SelectedValue: ids[0],
+      DateFilter: null,
+    };
+  }
+  return multiValueRow(tab, ids);
+}
+
 function buildFilterValues(
   tabs: FilterTab[],
   intent: ReportIntent,
@@ -153,7 +175,7 @@ function buildFilterValues(
   for (const extra of resolved.extras) {
     const code = tabCode(extra.tab);
     if (used.has(code) || extra.ids.length === 0) continue;
-    rows.push(multiValueRow(extra.tab, extra.ids));
+    rows.push(valueRow(extra.tab, extra.ids));
     used.add(code);
   }
   for (const tab of tabs) {
@@ -228,17 +250,21 @@ async function loadTabOptions(
   entity: ReportEntity,
   search = "",
 ): Promise<LookupOption[]> {
-  const fieldCodes = tab.Fields?.length ? tab.Fields : [tab.Code];
-  const apis = screen.ExtraApi.filter(
-    (api) => fieldCodes.includes(api.Code) || api.Code === tab.Code || api.Code === tab.CustomFieldCode,
-  );
+  const fieldCodes = (tab.Fields?.length ? tab.Fields : [tab.Code]).map((code) => String(code || "").toUpperCase());
+  const tabCodeUpper = String(tab.Code || "").toUpperCase();
+  const customUpper = String(tab.CustomFieldCode || "").toUpperCase();
+  const apis = screen.ExtraApi.filter((api) => {
+    const code = String(api.Code || "").toUpperCase();
+    return fieldCodes.includes(code) || code === tabCodeUpper || code === customUpper;
+  });
   const loaded: LookupOption[] = [];
   for (const api of apis) {
     const rows = await loadExtraApiOptions(api, {
-      Module: entity.dynamicModule,
+      Module: entity.listModule,
       SearchKey: search || null,
       SearchKeyWord: search,
-      SearchText: search || null,
+      SearchText: search || "",
+      startWith: search || "",
     });
     loaded.push(...rows);
   }
@@ -277,9 +303,14 @@ async function loadTabOptions(
     const rows = await searchCatalogFacet("GETMODEL", search);
     return rows.length > 0 ? rows : loadMasterByCode("MODEL");
   }
-  if (family === "source") return loadMasterByCode("LEADSOURCE");
+  if (family === "source") {
+    const source = await loadMasterByCode("SOURCE");
+    if (source.length > 0) return source;
+    return loadMasterByCode("LEADSOURCE");
+  }
   if (family === "sourcecategory") return loadMasterByCode("SOURCECATEGORY");
   if (family === "industry") return loadMasterByCode("INDUSTRY");
+  if (family === "sector") return loadMasterByCode("SECTOR");
   if (family === "tag") return loadMasterByCode("TAG");
   if (family === "contacttype") return loadMasterByCode("CONTACTTYPE");
   if (family === "relationship") return loadMasterByCode("RELATIONSHIPTYPE");
@@ -363,6 +394,24 @@ async function loadManageList(
     }
   } catch {
     // Wrapped MANAGE is the live fallback when unwrapped FilterValues 400.
+  }
+  try {
+    const page = await listManageRecords({
+      ...listQuery,
+      module: entity.listModule,
+      action: "MANAGE",
+      code: "MANAGE",
+      primaryKey: "Id",
+    });
+    if (page.rows.length > 0 || page.total > 0) {
+      return {
+        rows: page.rows as Record<string, unknown>[],
+        total: page.total,
+        source: `DYNAMIC ${entity.listModule} MANAGE`,
+      };
+    }
+  } catch {
+    // Dynamic-module MANAGE is next.
   }
   try {
     const page = await listManageRecords({
@@ -459,7 +508,7 @@ function buildReportingFilter(
 }
 
 function rowId(row: Record<string, unknown>): string {
-  const value = row.Id ?? row.id ?? row.QuoteId ?? row.LeadId ?? row.OrderId;
+  const value = row.Id ?? row.id ?? row.QuoteId ?? row.LeadId ?? row.OrderId ?? row.CompanyId ?? row.ContactId;
   return value == null ? "" : String(value);
 }
 
@@ -469,7 +518,7 @@ function asRows(raw: unknown): Record<string, unknown>[] {
   }
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
-    for (const key of ["Data", "data", "Records", "myDashboardDataList", "QuoteDetail", "LeadDetail", "value", "Value"]) {
+    for (const key of ["Data", "data", "Records", "myDashboardDataList", "QuoteDetail", "LeadDetail", "CompanyDetail", "ContactDetail", "value", "Value"]) {
       const inner = asRows(obj[key]);
       if (inner.length > 0) return inner;
     }
@@ -491,14 +540,24 @@ function chipsFor(intent: ReportIntent, extra: string[]): string[] {
   if (intent.entity) chips.push(REPORT_ENTITIES[intent.entity].plural);
   chips.push(
     intent.metric === "value"
-      ? "value (sum)"
+      ? "total value"
       : intent.stack === "dashboard"
         ? "dashboard"
         : intent.stack === "count"
           ? "count"
-          : "list",
+          : "records",
   );
-  if (intent.workforceTopic) chips.push(intent.workforceTopic);
+  if (intent.workforceTopic) {
+    chips.push(
+      intent.workforceTopic === "location"
+        ? "last location"
+        : intent.workforceTopic === "started"
+          ? "start date"
+          : intent.workforceTopic,
+    );
+  }
+  if (intent.partyTopic && intent.partyTopic !== "list") chips.push(intent.partyTopic);
+  if (intent.quoteTopic === "view") chips.push("view");
   if (intent.personName) chips.push(intent.personName);
   if (intent.ownerMe) chips.push("owned by me");
   if (intent.ownerName) chips.push(`owner ${intent.ownerName}`);
@@ -522,18 +581,24 @@ function summaryText(
   intent: ReportIntent,
   total: number,
   amount: number,
-  source: string,
   currencySymbol: string,
 ): string {
   const qualifier = chipsFor(intent, []).filter(
-    (chip) => chip !== entity.plural && chip !== "list" && chip !== "count" && chip !== "value (sum)",
+    (chip) =>
+      chip !== entity.plural && chip !== "records" && chip !== "count" && chip !== "dashboard" && chip !== "total value",
   );
   const tail = qualifier.length > 0 ? ` (${qualifier.join(" · ")})` : "";
+  const noun = total === 1 ? entity.title.toLowerCase() : entity.plural;
   if (intent.metric === "value") {
-    return `Value: ${formatAmount(amount, currencySymbol)} across ${total} ${total === 1 ? entity.title.toLowerCase() : entity.plural}${tail}. Source: ${source}.`;
+    return `Value: ${formatAmount(amount, currencySymbol)} across ${total} ${noun}${tail}.`;
   }
-  const verb = intent.stack === "dashboard" ? "Dashboard" : intent.stack === "count" ? "Count" : "Report";
-  return `${verb}: ${total} ${total === 1 ? entity.title.toLowerCase() : entity.plural}${tail}. Source: ${source}.`;
+  if (intent.stack === "dashboard") {
+    return `Dashboard: ${total} ${noun}${tail}.`;
+  }
+  if (intent.stack === "count") {
+    return `Count: ${total} ${noun}${tail}.`;
+  }
+  return `${total} ${noun}${tail}.`;
 }
 
 async function loadMappedCurrency(): Promise<Record<string, unknown> | null> {
@@ -576,18 +641,18 @@ function missingName(kind: string, needle: string, options: LookupOption[]): Rep
   });
 }
 
-function clarifyEntity(pathEntity?: ReportEntity["key"]): ReportResult {
+function clarifyEntity(): ReportResult {
   return emptyResult({
-    text: "Which records should I report on — quotes, leads, opportunities, orders, invoices, receipts, service tickets, work orders, actions, or workforce?",
+    text: "Which records should I report on — companies, contacts, quotes, leads, opportunities, orders, invoices, receipts, service tickets, work orders, actions, or workforce?",
     chips: [],
     total: 0,
     rows: [],
     columns: [],
     stack: "list",
         suggestions: [
-          "What filters can I use on the dashboard?",
+          "Companies created last 7 days",
+          "What filters can I use on companies?",
           "Team snapshot this month",
-          "Quote snapshot owned by me last 7 days",
           "Find my team",
         ],
     applied: { filterId: null, filterValues: null, fullTextSearch: "" },
@@ -660,16 +725,18 @@ async function genAiAnalysis(
   history: ChatHistoryTurn[] = [],
 ): Promise<string> {
   try {
+    const token = getAccessToken();
     const res = await fetch("/api/ask/analyze", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ question, summary, history: history.slice(-8) }),
     });
-    const json = (await res.json()) as { analysis?: string; hint?: string; error?: string };
+    const json = (await res.json()) as { analysis?: string };
     if (json.analysis) return enforceMappedCurrency(json.analysis, summary.currencyCode, summary.currencySymbol);
-    const local = localAnalysis(question, summary);
-    if (json.hint) return `${local}\n\n${json.hint}`;
-    return local;
+    return localAnalysis(question, summary);
   } catch {
     return localAnalysis(question, summary);
   }
@@ -694,10 +761,10 @@ export async function runReportQuestion(
         columns: [],
         stack: "list",
         suggestions: [
+          "Companies created last 7 days",
+          "Contacts created last 7 days",
           "Team snapshot this month",
-          "Quote snapshot owned by me last 7 days",
           "Find my team",
-          "Leads I own this month",
         ],
         applied: { filterId: null, filterValues: null, fullTextSearch: "" },
       }),
@@ -739,8 +806,8 @@ export async function runReportQuestion(
           intent,
           result: {
             text: snapshot.rows.length
-              ? `Team snapshot: ${snapshot.total} records across ${snapshot.rows.length} modules. Source: ${snapshot.source}.`
-              : `Team snapshot returned no module counts. Source: ${snapshot.source}.`,
+              ? `Team snapshot: ${snapshot.total} records across ${snapshot.rows.length} modules.`
+              : "Team snapshot returned no module counts.",
             analysis: snapshot.rows
               .slice(0, 12)
               .map((row) => `${row.Title}: ${Number(row.Count ?? 0).toLocaleString()}`)
@@ -761,7 +828,7 @@ export async function runReportQuestion(
           },
         };
       } catch (err) {
-        const message = err instanceof TebApiError ? err.message : "The dashboard reporting APIs did not return a snapshot.";
+        const message = userFacingAskError(err);
         return {
           intent,
           result: emptyResult({
@@ -777,26 +844,29 @@ export async function runReportQuestion(
         };
       }
     }
-    return { intent, result: clarifyEntity(pathEntity) };
+    return { intent, result: clarifyEntity() };
   }
 
   const entity = REPORT_ENTITIES[intent.entity];
   if (entity.key === "workforce") {
     return { intent, result: await runWorkforceReport(intent, emptyResult) };
   }
+  if (entity.key === "company" || entity.key === "contact") {
+    return { intent, result: await runPartyReport(intent, user, emptyResult, history) };
+  }
+  if (entity.key === "quote" && intent.quoteTopic === "view") {
+    return { intent, result: await runQuoteView(intent, emptyResult) };
+  }
   if (intent.listFilters) {
     const screen = await loadScreen(entity.dynamicModule);
-    const lines = screen.Tabs.map((tab) => {
-      const type = String(tab.TabViewType || tab.CustomControlType || "MULTISELECT");
-      return `• ${tab.Title || tab.Code} (${tab.Code}, ${type})`;
-    });
+    const lines = screen.Tabs.map((tab) => String(tab.Title || "").trim()).filter(Boolean).map((title) => `• ${title}`);
     return {
       intent,
       result: emptyResult({
         text:
           lines.length > 0
-            ? `${entity.title} Manage filters from GetFilterControls:\n${lines.join("\n")}\n\nCombine them like: ${entity.plural} where owner = Akash, Priya and status = Open created last 7 days`
-            : `No filter tabs were returned for ${entity.plural}. I can still apply owner, assignee, status, and date from your question.`,
+            ? `You can filter ${entity.plural} by:\n${lines.join("\n")}\n\nTry: ${entity.plural} where owner = Akash, Priya and status = Open created last 7 days`
+            : `I can still filter ${entity.plural} by owner, assignee, status, and date from your question.`,
         chips: [entity.plural, "filter fields"],
         total: 0,
         rows: [],
@@ -823,7 +893,7 @@ export async function runReportQuestion(
         return {
           intent,
           result: emptyResult({
-            text: `No saved Manage filters were returned for ${entity.plural}. I can still apply owner, date, and stage filters from your question.`,
+            text: `No saved filters were found for ${entity.plural}. I can still apply owner, date, and status from your question.`,
             chips: chipsFor(intent, []),
             total: 0,
             rows: [],
@@ -882,10 +952,20 @@ export async function runReportQuestion(
       intent.criteria.some((row) => /^(status|workflow)$/.test(aliasFamily(row.key))) ||
       intent.stageNames.length > 0 ||
       Boolean(intent.workflowName);
-    const [owners, workflowOptions] = await Promise.all([
+    const [owners, listedWorkflows, stageTree] = await Promise.all([
       peopleNeeded ? listOwners() : Promise.resolve([]),
       stageNeeded ? listWorkflowsForModule(entity.workflowModules) : Promise.resolve([]),
+      stageNeeded
+        ? loadWorkflowStageTree([entity.listModule, entity.dynamicModule, ...entity.workflowModules])
+        : Promise.resolve({ workflows: [] as LookupOption[], stages: [] as Array<LookupOption & { workflowId: string }> }),
     ]);
+    const workflowOptions =
+      listedWorkflows.length > 0
+        ? listedWorkflows
+        : stageTree.workflows.length > 0
+          ? stageTree.workflows
+          : listedWorkflows;
+    const treeStages = stageTree.stages;
 
     async function resolveNames(kind: string, names: string[], options: LookupOption[]): Promise<string[] | ReportResult> {
       const ids: string[] = [];
@@ -928,27 +1008,55 @@ export async function runReportQuestion(
         continue;
       }
       if (family === "status") {
-        const limited = (workflows.length > 0
-          ? workflowOptions.filter((option) => workflows.some((item) => item.id === option.id))
-          : workflowOptions
-        ).slice(0, 8);
-        const pool = limited.length > 0 ? limited : workflowOptions.slice(0, 8);
-        const stageLists = await Promise.all(pool.map((workflow) => listWorkflowStages(workflow.id, entity.listModule)));
-        for (let index = 0; index < pool.length; index += 1) {
-          const matchedIds: string[] = [];
-          for (const name of row.values) {
-            const picked = pickBest(matchLookups(stageLists[index] ?? [], name), name);
-            if (picked) matchedIds.push(picked.id);
+        const pool =
+          workflows.length > 0
+            ? workflowOptions.filter((option) => workflows.some((item) => item.id === option.id))
+            : workflowOptions;
+        const usablePool = pool.length > 0 ? pool : workflowOptions;
+        const stageCache = new Map<string, LookupOption[]>();
+        if (treeStages.length > 0) {
+          const byWorkflow = new Map<string, LookupOption[]>();
+          for (const stage of treeStages) {
+            const list = byWorkflow.get(stage.workflowId) ?? [];
+            list.push(stage);
+            byWorkflow.set(stage.workflowId, list);
           }
-          if (matchedIds.length > 0) {
-            const existing = workflows.find((item) => item.id === pool[index].id);
-            if (existing) existing.stages = [...new Set([...existing.stages, ...matchedIds])];
-            else workflows.push({ id: pool[index].id, stages: matchedIds });
-            statusIds.push(...matchedIds);
+          for (const [workflowId, list] of byWorkflow) stageCache.set(workflowId, list);
+        }
+        async function stagesFor(workflowId: string): Promise<LookupOption[]> {
+          const cached = stageCache.get(workflowId);
+          if (cached) return cached;
+          const loaded = await listWorkflowStages(workflowId, entity.listModule);
+          stageCache.set(workflowId, loaded);
+          return loaded;
+        }
+        for (const name of row.values) {
+          let picked: (LookupOption & { workflowId?: string }) | null = pickBest(matchLookups(treeStages, name), name);
+          let workflowId = picked ? String(picked.workflowId || picked.extra?.ParentId || "") : "";
+          if (!picked || !workflowId) {
+            for (const workflow of usablePool.slice(0, 25)) {
+              const list = await stagesFor(workflow.id);
+              const hit = pickBest(matchLookups(list, name), name);
+              if (hit) {
+                picked = hit;
+                workflowId = workflow.id;
+                break;
+              }
+            }
           }
+          if (!picked || !workflowId) continue;
+          const existing = workflows.find((item) => item.id === workflowId);
+          if (existing) existing.stages = [...new Set([...existing.stages, picked.id])];
+          else workflows.push({ id: workflowId, stages: [picked.id] });
+          statusIds.push(picked.id);
+          extraChips.push(picked.label);
         }
         if (row.values.length > 0 && statusIds.length === 0) {
-          return { intent, result: missingName("status", row.values.join(", "), stageLists.flat().slice(0, 8)) };
+          const samples = (treeStages.length > 0 ? treeStages : [...stageCache.values()].flat()).slice(0, 8);
+          if (samples.length > 0) {
+            return { intent, result: missingName("status", row.values.join(", "), samples) };
+          }
+          extraChips.push(...row.values);
         }
         continue;
       }
@@ -974,6 +1082,10 @@ export async function runReportQuestion(
           if (literal) {
             ids.push(name);
             extraChips.push(name);
+            continue;
+          }
+          if (options.length === 0) {
+            extraChips.push(`${tab.Title || row.key} ${name}`);
             continue;
           }
           return { intent, result: missingName(tab.Title || row.key, name, options) };
@@ -1031,17 +1143,15 @@ export async function runReportQuestion(
 
   let rows: Record<string, unknown>[] = [];
   let total = 0;
-  let source = `DYNAMIC AcGetData ${entity.listModule}`;
 
   if (intent.stack === "dashboard" || intent.stack === "count") {
     try {
       const dash = await fetchEntityDashboard(entity, reportingPayload, intent.pageSize);
       rows = dash.rows;
       total = dash.total;
-      source = dash.source;
     } catch (err) {
       if (intent.stack === "dashboard") {
-        const message = err instanceof TebApiError ? err.message : "The dashboard reporting APIs did not return a snapshot.";
+        const message = userFacingAskError(err);
         return {
           intent,
           result: emptyResult({
@@ -1065,10 +1175,9 @@ export async function runReportQuestion(
       const page = await loadManageList(entity, listQuery);
       rows = page.rows;
       total = page.total;
-      source = page.source;
     } catch (err) {
       if (!entity.reportingMethod) {
-        const message = err instanceof TebApiError ? err.message : "The filter APIs did not return a report.";
+        const message = userFacingAskError(err);
         return {
           intent,
           result: emptyResult({
@@ -1101,12 +1210,11 @@ export async function runReportQuestion(
       if (loaded && (loaded.rows.length > 0 || loaded.total > 0)) {
         rows = loaded.rows;
         total = loaded.total;
-        source = loaded.source;
       } else if (rows.length === 0 && total === 0 && !loaded) {
         return {
           intent,
           result: emptyResult({
-            text: "The list and reporting APIs did not return rows for those filters.",
+            text: "No matching records were found for those filters.",
             chips: chipsFor(intent, extraChips),
             total: 0,
             rows: [],
@@ -1145,7 +1253,6 @@ export async function runReportQuestion(
       const reported = asTotal(data, asTotal(envelope, total));
       if (reported > total) {
         total = reported;
-        source = `reporting ${reportingMethod}`;
       }
     } catch {
       // List total is enough.
@@ -1179,7 +1286,6 @@ export async function runReportQuestion(
     if (loaded && (loaded.rows.length > 0 || loaded.total > 0)) {
       rows = loaded.rows;
       total = loaded.total;
-      source = loaded.source;
     }
   }
 
@@ -1195,13 +1301,13 @@ export async function runReportQuestion(
             .join("\n")
         : await genAiAnalysis(intent.raw, summary, history)
       : intent.stack === "dashboard"
-        ? "No dashboard snapshot rows were returned for those FilterDetail criteria."
-        : "No rows matched those Manage filter criteria.";
+        ? "No dashboard numbers were found for those filters."
+        : "No matching records were found for those filters.";
 
   return {
     intent,
     result: {
-      text: summaryText(entity, intent, total, summary.amount, source, summary.currencySymbol),
+      text: summaryText(entity, intent, total, summary.amount, summary.currencySymbol),
       analysis,
       chips: chipsFor(intent, extraChips),
       total,
@@ -1215,6 +1321,13 @@ export async function runReportQuestion(
       summary,
       entity: entity.key,
       stack: intent.stack,
+      quoteCards:
+        entity.key === "quote"
+          ? rows
+              .slice(0, 6)
+              .map((row) => toQuoteCard(row))
+              .filter((row): row is NonNullable<typeof row> => Boolean(row))
+          : undefined,
       viewHref: entity.viewPath
         ? (row) => {
             const id = rowId(row);
@@ -1224,11 +1337,17 @@ export async function runReportQuestion(
       suggestions:
         intent.stack === "dashboard"
           ? DASHBOARD_SUGGESTIONS
-          : [
-              `${entity.plural} created in the last 7 days`,
-              `Pie chart of ${entity.plural} this month`,
-              `${entity.title} trend this quarter`,
-            ],
+          : entity.key === "quote"
+            ? [
+                "View quote …",
+                `${entity.plural} created in the last 7 days`,
+                `Pie chart of ${entity.plural} this month`,
+              ]
+            : [
+                `${entity.plural} created in the last 7 days`,
+                `Pie chart of ${entity.plural} this month`,
+                `${entity.title} trend this quarter`,
+              ],
       applied: { filterId, filterValues, fullTextSearch: search },
     },
   };

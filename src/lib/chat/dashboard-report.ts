@@ -10,9 +10,10 @@ import type {
   ReportingFilterDetail,
 } from "@/lib/chat/types";
 import { toLiveDateFilter } from "@/lib/chat/date-filter";
+import { friendlyModuleLabel } from "@/lib/chat/user-copy";
 
 export const DASHBOARD_FILTER_HELP =
-  "Management Dashboard does not use Manage FILTER tabs. Widgets POST an unwrapped FilterDetail to gateway/reporting/{Method}.\n\nToolbar filters:\n• Date (DATEFILTER) — created / updated / closed / scheduled; last N days (WITHIN) or between dates\n• Owner (OWNERFILTER) — FnGetSubscriberUsersDropdown\n• Assignee\n• Workflow / stages\n• Location (sites)\n• Items / category / brand / SKU / model\n• Saved FilterId\n\nData:\n• Team snapshot → GetTeamBasedRecordsCount (member drill GetTeamAndMemberBasedRecordsCount)\n• Module snapshot → GetModuleWiseOverviewDashboard (QUOTESNAPSHOT, LEADSNAPSHOT, …)\n• Module list → GetTeamBasedQuoteDetails / Lead / Order / Opportunity / Invoice / Ticket / Workorder / Action\n\nExamples:\n• Team snapshot this month\n• Quote snapshot owned by me last 7 days\n• How many leads in Open";
+  "You can ask about the Management Dashboard in plain language.\n\nMention filters such as:\n• Date — created, updated, closed, or scheduled; last N days or between dates\n• Owner\n• Assignee\n• Workflow or stages\n• Location\n• Items, category, brand, SKU, or model\n• A saved filter by name\n\nExamples:\n• Team snapshot this month\n• Quote snapshot owned by me last 7 days\n• How many leads in Open";
 
 export const DASHBOARD_SUGGESTIONS = [
   "Team snapshot this month",
@@ -98,14 +99,15 @@ function flattenTeamSnapshot(rows: Record<string, unknown>[]): Record<string, un
       const rec = app as Record<string, unknown>;
       const key = String(rec.AppId ?? rec.AppName ?? "");
       if (!key) continue;
+      const label = friendlyModuleLabel(rec.AppName ?? rec.AppId ?? key);
       const prev = byApp.get(key) ?? {
-        Title: String(rec.AppName ?? rec.AppId ?? key),
+        Title: label,
         Module: key,
         Count: 0,
         TotalCount: 0,
         TotalValue: 0,
         CurrencyIcon: rec.CurrencyIcon ?? row.CurrencyIcon ?? "",
-        Status: String(rec.AppName ?? rec.AppId ?? key),
+        Status: label,
       };
       const count = Number(rec.TotalCount ?? rec.Count ?? 0) || 0;
       const value = Number(rec.TotalValue ?? 0) || 0;
@@ -121,7 +123,7 @@ function flattenTeamSnapshot(rows: Record<string, unknown>[]): Record<string, un
 export function normalizeDashboardRows(raw: unknown): Record<string, unknown>[] {
   const rows = flattenTeamSnapshot(asRows(raw));
   return rows.map((row) => {
-    const title = String(
+    const title = friendlyModuleLabel(
       row.Title ?? row.AppName ?? row.TeamName ?? row.Name ?? row.Module ?? row.ModuleCode ?? row.Text ?? row.Label ?? "Module",
     );
     const count = Number(
@@ -153,7 +155,7 @@ export function looksLikeSnapshot(rows: Record<string, unknown>[]): boolean {
 export function dashboardCharts(rows: Record<string, unknown>[]): ChartSeries[] {
   const points = rows
     .map((row) => ({
-      label: String(row.Title ?? row.Status ?? "Module"),
+      label: friendlyModuleLabel(row.Title ?? row.Status ?? "Module"),
       value: Number(row.Count ?? row.TotalCount ?? row.TotalRecord ?? 0),
     }))
     .filter((point) => Number.isFinite(point.value) && point.value > 0)
@@ -314,7 +316,7 @@ export function dashboardHelpResult(
 ): ReportResult {
   return emptyResult({
     text: DASHBOARD_FILTER_HELP,
-    chips: ["dashboard", "FilterDetail"],
+    chips: ["dashboard"],
     total: 0,
     rows: [],
     columns: DASHBOARD_COLUMNS,

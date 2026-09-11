@@ -12,7 +12,6 @@ export const SESSION_KEYS = {
   agmKey: "TEBAgmKey",
   loginClick: "loginclick",
   rememberedEmail: "teb-remember-email",
-  sidebarCollapsed: "teb-sidebar-collapsed",
   askJourney: "teb.ask.journey",
 } as const;
 
@@ -186,11 +185,9 @@ export function snapshotAskJourneys(): Array<[string, string]> {
 export function clearSession(): void {
   if (!canUseStorage()) return;
   const remembered = localStorage.getItem(SESSION_KEYS.rememberedEmail);
-  const collapsed = localStorage.getItem(SESSION_KEYS.sidebarCollapsed);
   const journeys = snapshotAskJourneys();
   localStorage.clear();
   if (remembered) localStorage.setItem(SESSION_KEYS.rememberedEmail, remembered);
-  if (collapsed) localStorage.setItem(SESSION_KEYS.sidebarCollapsed, collapsed);
   for (const [key, value] of journeys) localStorage.setItem(key, value);
   sessionStorage.removeItem(SESSION_KEYS.askJourney);
 }
@@ -231,7 +228,10 @@ export function userDisplayName(user: TebUserDetail | null): string {
 export function userAvatarUrl(user: TebUserDetail | null): string | null {
   if (!user) return null;
   const pic = user.ProfilePic || user.Logo;
-  return pic ? String(pic) : null;
+  if (!pic) return null;
+  const text = String(pic).trim();
+  if (/^https?:\/\//i.test(text) || text.startsWith("/") || /^data:image\//i.test(text)) return text;
+  return null;
 }
 
 export function normalizeAppPath(link?: string | null): string {
@@ -240,16 +240,6 @@ export function normalizeAppPath(link?: string | null): string {
   if (!trimmed) return "/";
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
-export function defaultLandingPath(user: TebUserDetail | null, menu: TebMenuApp[]): string {
-  if (user?.IsAdmin === 1 || user?.IsAdmin === true) {
-    return "/admin/system";
-  }
-  const sales = menu.find((app) => app.AppCode === "SALES");
-  const dash = sales?.NavigationMenus?.find((item) => item.menucode === "DASH");
-  const defaultChild = dash?.children?.find((child) => child.isdefault === 1 || child.isdefault === true);
-  return normalizeAppPath(defaultChild?.link || dash?.link || "/");
 }
 
 export function isTruthyDisabled(value: unknown): boolean {

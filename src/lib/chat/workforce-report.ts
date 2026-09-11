@@ -19,7 +19,7 @@ import { buildDatasetSummary, pickCharts } from "@/lib/chat/charts";
 import type { MapPath, MapPin, ReportIntent, ReportResult } from "@/lib/chat/types";
 
 const WORKFORCE_HELP =
-  "Workforce does not use Manage FILTER tabs. Ask:\n• Find my team\n• Where is the user now\n• Where is Akash\n• Show route for me\n• Route of Priya";
+  "Ask about your team in plain language:\n• Find my team\n• Where is the user now\n• Where is Akash\n• Show route for me\n• Route of Priya";
 
 const WORKFORCE_SUGGESTIONS = ["Find my team", "Where is the user now", "Show route for me"];
 
@@ -138,13 +138,16 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
   const topic = intent.workforceTopic || "team";
   const [users, team] = await Promise.all([listWorkforceUsers(), listTeamMembers()]);
   const directory = users.length >= team.length ? users : mergeUnique(users, team);
-  const chips = ["workforce", topic];
+  const chips = [
+    "workforce",
+    topic === "location" ? "last location" : topic === "started" ? "start date" : topic,
+  ];
   if (intent.personName) chips.push(intent.personName);
   if (intent.date) chips.push(intent.date.label);
 
   if (directory.length === 0 && team.length === 0) {
     return emptyResult({
-      text: "No team members came back for this login. This account may not have Workforce tracking, or the user list APIs returned empty.",
+      text: "I couldn't find any team members for this login. This account may not have team tracking turned on.",
       chips,
       total: 0,
       rows: [],
@@ -226,7 +229,7 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
         applied: appliedSearch(intent, who.label),
       }),
       analysis: hasMap
-        ? `${who.label} route ${when}${km}. Start and end pins plus the tracked path from GetUserTrackingMapView.`
+        ? `${who.label} route ${when}${km}. Start and end pins plus the tracked path.`
         : `${who.label} has no tracked path for ${when}.`,
       charts: [],
       map,

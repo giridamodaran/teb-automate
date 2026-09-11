@@ -26,6 +26,7 @@ export function rowTitle(row: Record<string, unknown>): string {
   return (
     firstString(row, [
       "FullName",
+      "CompanyName",
       "QuoteTitle",
       "TicketTitle",
       "WorkOrderTitle",
@@ -46,7 +47,21 @@ export function rowOwner(row: Record<string, unknown>): string {
 }
 
 export function rowStatus(row: Record<string, unknown>): string {
-  return firstString(row, ["Status", "WorkFlow", "Workflow", "Stage", "StatusName", "Address", "Location"]) || "Unknown";
+  return (
+    firstString(row, [
+      "Status",
+      "StatusName",
+      "WorkFlowStatus",
+      "WorkflowStatus",
+      "WorkFlowStatusName",
+      "Stage",
+      "StageName",
+      "WorkFlow",
+      "Workflow",
+      "Address",
+      "Location",
+    ]) || "Unknown"
+  );
 }
 
 export function rowDate(
@@ -211,10 +226,10 @@ export function localAnalysis(question: string, summary: DatasetSummary): string
   const topOwner = summary.byOwner[0];
   const lines: string[] = [];
   if (summary.metric === "value") {
-    lines.push(`Sum of value: ${money(summary.amount)} across ${summary.shown} records.`);
+    lines.push(`Total value: ${money(summary.amount)} across ${summary.shown} records.`);
   } else {
-    lines.push(`Filtered set: ${summary.total} records (${summary.shown} loaded for the chart).`);
-    if (summary.amount > 0) lines.push(`Value in the loaded rows: ${money(summary.amount)}.`);
+    lines.push(`Showing ${summary.shown} of ${summary.total} records.`);
+    if (summary.amount > 0) lines.push(`Value in these records: ${money(summary.amount)}.`);
   }
   if (topStatus) {
     lines.push(

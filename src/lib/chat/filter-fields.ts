@@ -10,12 +10,14 @@ export const FILTER_ALIASES: Record<string, string[]> = {
   source: ["source", "lead source", "leadsource", "sourcename", "source name"],
   sourcecategory: ["source category", "sourcecategory"],
   industry: ["industry", "industries"],
+  sector: ["sector", "sectors"],
   tag: ["tag", "tags"],
   company: ["company", "companies", "company name", "account"],
   contacttype: ["contact type", "contacttype"],
   relationship: ["relationship", "relationship type", "relationshiptype"],
   referral: ["referral", "referral source", "refralsource"],
-  priority: ["priority"],
+  priority: ["priority", "internal priority"],
+  channel: ["channel", "channels"],
   type: ["type", "lead type", "opportunity type", "quote type", "order type", "invoice type", "action type", "task type", "actiontype", "ticket type", "work order type", "wo type"],
   title: ["title", "action title", "task title", "ticket title", "work order title"],
   related: ["related to", "related", "linked to", "module"],
@@ -23,7 +25,6 @@ export const FILTER_ALIASES: Record<string, string[]> = {
   workordercode: ["work order no", "work order number", "work order code", "wo no", "wo number", "wocode", "workordercode"],
   asset: ["asset", "assets", "equipment"],
   sla: ["sla", "sla status"],
-  channel: ["channel", "channels"],
   item: ["item", "items", "product", "products"],
   category: ["category", "categories", "item category"],
   brand: ["brand", "brands"],
@@ -79,7 +80,7 @@ export function parseCriteria(text: string): FilterCriterion[] {
     .map((alias) => alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .join("|");
   const pattern = new RegExp(
-    `\\b(?:where\\s+)?(${field})\\s*(?:=|is|are|:|in)\\s+([^?]+?)(?=\\s+(?:where\\s+)?(?:${field})\\s*(?:=|is|are|:|in)\\b|\\s+${DATE_STOP.source}|$)`,
+    `\\b(?:where\\s+)?(${field})\\s*(?:=|is|are|:|in)\\s+([^?]+?)(?=\\s+(?:(?:and|or)\\s+)?(?:where\\s+)?(?:${field})\\s*(?:=|is|are|:|in)|\\s+${DATE_STOP.source}|$)`,
     "gi",
   );
   const rows: FilterCriterion[] = [];

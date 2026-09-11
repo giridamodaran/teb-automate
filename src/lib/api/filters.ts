@@ -2,7 +2,7 @@ import { tebRequest } from "@/lib/api/client";
 import type { TebHostKey } from "@/lib/api/hosts";
 import type { TebApiEnvelope } from "@/lib/api/types";
 import { asLookupOptions, searchItems, type LookupOption } from "@/lib/api/quote-lookups";
-import { acGetData } from "@/lib/api/quote";
+import { acGetData } from "@/lib/api/dynamic";
 import type { FilterControl, FilterExtraApi, FilterScreen, FilterTab, ReportingFilterDetail } from "@/lib/chat/types";
 
 function unwrapUnknown(raw: unknown): unknown {
@@ -45,6 +45,99 @@ function hostFromApi(api?: string): TebHostKey {
   return "MICRO";
 }
 
+const FILTER_MODULE_ALIASES: Record<string, string[]> = {
+  TicketManagement: ["TEBTicket", "TicketManagement"],
+  WorkOrderManagement: ["TEBWorkorder", "WorkOrderManagement", "WorkorderManagement"],
+  EstimationManagement: ["EstimationManagement", "TEBQuote"],
+  LeadManagement: ["LeadManagement", "TEBLead"],
+  SalesManagement: ["SalesManagement", "TEBSale"],
+  OrderManagement: ["OrderManagement", "TEBOrder"],
+  InvoiceManagement: ["InvoiceManagement", "TEBInvoice"],
+  ActionManagement: ["ActionManagement", "TEBAction"],
+  TEBBusiness: ["TEBBusiness", "BusinessContactManagement"],
+  TEBPeople: ["TEBPeople", "BusinessContactManagement"],
+  BusinessContactManagement: ["TEBBusiness", "TEBPeople", "BusinessContactManagement"],
+};
+
+const EXTRA_TAB_META: Record<string, Pick<FilterTab, "Title" | "TabViewType" | "DbFieldName">> = {
+  OWNER: { Title: "Owner", TabViewType: "MULTISELECT", DbFieldName: "ownerid" },
+  ASSIGNEDTO: { Title: "Assigned to", TabViewType: "MULTISELECT", DbFieldName: "assigneeid" },
+  PRIORITY: { Title: "Priority", TabViewType: "MULTISELECT", DbFieldName: "priorityid" },
+  INTERNALPRIORITY: { Title: "Internal priority", TabViewType: "MULTISELECT", DbFieldName: "internalpriorityid" },
+  TYPE: { Title: "Type", TabViewType: "MULTISELECT", DbFieldName: "typeid" },
+  CHANNEL: { Title: "Channel", TabViewType: "MULTISELECT", DbFieldName: "channelid" },
+  SITE: { Title: "Site", TabViewType: "MULTISELECT", DbFieldName: "locationid" },
+  ASSET: { Title: "Asset", TabViewType: "MULTISELECT", DbFieldName: "assetid" },
+  SLA: { Title: "SLA", TabViewType: "MULTISELECT", DbFieldName: "slaid" },
+  TICKETCODE: { Title: "Ticket no.", TabViewType: "INPUTFIELD", DbFieldName: "ticketcode" },
+  WORKORDERCODE: { Title: "Work order no.", TabViewType: "INPUTFIELD", DbFieldName: "workordercode" },
+  INDUSTRY: { Title: "Industry", TabViewType: "MULTISELECT", DbFieldName: "industryid" },
+  SECTOR: { Title: "Sector", TabViewType: "MULTISELECT", DbFieldName: "sectorid" },
+  RELATIONSHIPTYPE: { Title: "Relationship", TabViewType: "MULTISELECT", DbFieldName: "relationshiptypeid" },
+  CONTACTTYPE: { Title: "Contact type", TabViewType: "MULTISELECT", DbFieldName: "contacttypeid" },
+  SOURCE: { Title: "Source", TabViewType: "MULTISELECT", DbFieldName: "sourceid" },
+  SOURCECATEGORY: { Title: "Source category", TabViewType: "MULTISELECT", DbFieldName: "sourcecategoryid" },
+};
+
+function screenCodesFor(moduleCode: string, screenCode: string): string[] {
+  const codes = [moduleCode === "LeadManagement" ? "MANAGE" : screenCode];
+  if (moduleCode === "EstimationManagement") codes.push("QUOTEFILTER", "QUOTE");
+  if (moduleCode === "SalesManagement") codes.push("OPPORTUNITYFILTER");
+  if (moduleCode === "OrderManagement") codes.push("ORDERFILTER", "ORDER");
+  if (moduleCode === "InvoiceManagement") codes.push("INVOICEFILTER", "INVOICE");
+  if (moduleCode === "ActionManagement") codes.push("ACTIONFILTER", "ACTION");
+  if (moduleCode === "TicketManagement") codes.push("TICKETFILTER", "TICKET", "MANAGETICKET", "MANAGETICKETFILTER");
+  if (moduleCode === "WorkOrderManagement") codes.push("WORKORDERFILTER", "WORKORDER", "MANAGEWORKORDER", "MANAGEWORKORDERFILTER");
+  if (moduleCode === "TEBBusiness" || moduleCode === "BusinessContactManagement") {
+    codes.push("COMPANYFILTER", "MANAGECOMPANY", "MANAGE");
+  }
+  if (moduleCode === "TEBPeople") codes.push("CONTACTFILTER", "MANAGECONTACT", "MANAGE");
+  return [...new Set(codes)];
+}
+
+function enrichFilterScreen(screen: FilterScreen): FilterScreen {
+  const have = new Set(screen.Tabs.map((tab) => String(tab.Code || "").toUpperCase()));
+  const tabs = [...screen.Tabs];
+  for (const api of screen.ExtraApi) {
+    const code = String(api.Code || "");
+    const upper = code.toUpperCase();
+    if (!code || have.has(upper)) continue;
+    const meta = EXTRA_TAB_META[upper];
+    if (!meta) continue;
+    tabs.push({
+      Code: code,
+      Title: meta.Title,
+      TabViewType: meta.TabViewType,
+      DbFieldName: meta.DbFieldName,
+      Fields: [code],
+    });
+    have.add(upper);
+  }
+  return { ...screen, Tabs: tabs };
+}
+
+function extraApiParams(
+  paramName: Array<{ Name?: string; Property?: string; Type?: string }> | undefined,
+  context: Record<string, unknown>,
+): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  for (const row of paramName ?? []) {
+    const name = String(row.Name || "").trim();
+    if (!name) continue;
+    if (String(row.Type || "").toUpperCase() === "FIXED") {
+      params[name] = row.Property ?? "";
+    } else {
+      const key = String(row.Property || name);
+      if (context[key] != null) params[name] = context[key];
+      else if (context[name] != null) params[name] = context[name];
+    }
+  }
+  const search = String(context.SearchText ?? context.SearchKey ?? context.startWith ?? "").trim();
+  if (search && (params.startWith === "" || params.startWith == null)) params.startWith = search;
+  if (Object.keys(params).length === 0) return { ...context };
+  return params;
+}
+
 async function fetchFilterScreen(moduleCode: string, screenCode: string): Promise<FilterScreen> {
   const envelope = await tebRequest<{
     Tabs?: FilterTab[];
@@ -68,24 +161,20 @@ async function fetchFilterScreen(moduleCode: string, screenCode: string): Promis
 }
 
 export async function getFilterScreen(moduleCode: string, screenCode = "MANAGE"): Promise<FilterScreen> {
-  const codes = [moduleCode === "LeadManagement" ? "MANAGE" : screenCode];
-  if (moduleCode === "EstimationManagement") codes.push("QUOTEFILTER", "QUOTE");
-  if (moduleCode === "SalesManagement") codes.push("OPPORTUNITYFILTER");
-  if (moduleCode === "OrderManagement") codes.push("ORDERFILTER", "ORDER");
-  if (moduleCode === "InvoiceManagement") codes.push("INVOICEFILTER", "INVOICE");
-  if (moduleCode === "ActionManagement") codes.push("ACTIONFILTER", "ACTION");
-  if (moduleCode === "TicketManagement") codes.push("TICKETFILTER", "TICKET", "MANAGETICKET");
-  if (moduleCode === "WorkOrderManagement") codes.push("WORKORDERFILTER", "WORKORDER", "MANAGEWORKORDER");
+  const modules = FILTER_MODULE_ALIASES[moduleCode] ?? [moduleCode];
+  const codes = screenCodesFor(moduleCode, screenCode);
   let last: FilterScreen = { Tabs: [], Controls: [], ExtraApi: [] };
-  for (const code of codes) {
-    try {
-      last = await fetchFilterScreen(moduleCode, code);
-      if (last.Tabs.length > 0) return last;
-    } catch {
-      // Next known ScreenCode for this module.
+  for (const mod of modules) {
+    for (const code of codes) {
+      try {
+        last = await fetchFilterScreen(mod, code);
+        if (last.Tabs.length > 0) return enrichFilterScreen(last);
+      } catch {
+        // Next ModuleCode / ScreenCode pair used by live managefilter.
+      }
     }
   }
-  return last;
+  return last.Tabs.length > 0 ? enrichFilterScreen(last) : last;
 }
 
 export async function getFilterControls(moduleCode: string, screenCode = "MANAGE"): Promise<FilterTab[]> {
@@ -101,12 +190,20 @@ export async function loadExtraApiOptions(
   if (!call?.Method) return [];
   const host = hostFromApi(call.Api);
   const method = String(call.Type || "GET").toUpperCase();
+  const params = extraApiParams(call.ParamName, context);
   try {
-    const envelope = await tebRequest(
-      host,
-      call.Method,
-      method === "GET" ? undefined : { method: "POST", body: context },
-    );
+    let envelope: TebApiEnvelope;
+    if (method === "GET") {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value == null || value === "") continue;
+        query.set(key, String(value));
+      }
+      const suffix = query.toString();
+      envelope = await tebRequest(host, suffix ? `${call.Method}?${suffix}` : call.Method);
+    } else {
+      envelope = await tebRequest(host, call.Method, { method: "POST", body: params });
+    }
     return asLookupOptions(envelope.Data ?? envelope.value ?? envelope.Value ?? envelope);
   } catch {
     return [];
@@ -182,6 +279,95 @@ export async function listWorkflowStages(workflowId: string, listModule: string)
   });
 }
 
+function nodeId(row: Record<string, unknown>): string {
+  return String(row.Id ?? row.id ?? row.StatusId ?? row.WorkFlowStatusId ?? row.WorkflowId ?? row.WorkFlowId ?? "").trim();
+}
+
+function nodeLabel(row: Record<string, unknown>): string {
+  return String(
+    row.Text ??
+      row.Name ??
+      row.Title ??
+      row.Label ??
+      row.StatusName ??
+      row.WorkFlowStatus ??
+      row.WorkFlowName ??
+      row.WorkflowName ??
+      "",
+  ).trim();
+}
+
+function nodeChildren(row: Record<string, unknown>): Record<string, unknown>[] {
+  const raw = row.Children ?? row.children ?? row.data ?? row.Data ?? row.Stages ?? row.Status;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
+}
+
+function walkWorkflowTree(
+  nodes: unknown[],
+  parentId: string,
+  workflows: LookupOption[],
+  stages: Array<LookupOption & { workflowId: string }>,
+): void {
+  for (const node of nodes) {
+    if (!node || typeof node !== "object") continue;
+    const row = node as Record<string, unknown>;
+    const id = nodeId(row);
+    const label = nodeLabel(row) || id;
+    if (!id) continue;
+    const declaredParent = String(row.ParentId ?? row.parentId ?? "").trim();
+    const parent = declaredParent || parentId;
+    const children = nodeChildren(row);
+    if (!parent) {
+      workflows.push({ id, label, extra: row });
+      if (children.length) walkWorkflowTree(children, id, workflows, stages);
+      continue;
+    }
+    stages.push({ id, label, extra: row, workflowId: parent });
+    if (children.length) walkWorkflowTree(children, parent, workflows, stages);
+  }
+}
+
+/** Live FILTER tree: roots are workflows, children are stages (ParentId). */
+export async function loadWorkflowStageTree(
+  modules: string[],
+): Promise<{ workflows: LookupOption[]; stages: Array<LookupOption & { workflowId: string }> }> {
+  const workflows: LookupOption[] = [];
+  const stages: Array<LookupOption & { workflowId: string }> = [];
+  const seen = new Set<string>();
+  for (const moduleName of modules) {
+    if (!moduleName || seen.has(moduleName)) continue;
+    seen.add(moduleName);
+    const attempts: Array<{ path: string; method?: "GET" | "POST"; body?: unknown }> = [
+      { path: `gateway/common/GetWorkflowStageTree?Module=${encodeURIComponent(moduleName)}` },
+      { path: "gateway/common/GetWorkflowStageTree", method: "POST", body: { Module: moduleName } },
+    ];
+    for (const attempt of attempts) {
+      try {
+        const envelope = await tebRequest(
+          "MICRO",
+          attempt.path,
+          attempt.method === "POST" ? { method: "POST", body: attempt.body } : undefined,
+        );
+        const raw = unwrapUnknown(envelope.Data ?? envelope.value ?? envelope.Value ?? envelope);
+        const rows = Array.isArray(raw)
+          ? raw
+          : raw && typeof raw === "object"
+            ? ((raw as Record<string, unknown>).Data as unknown[]) ||
+              ((raw as Record<string, unknown>).data as unknown[]) ||
+              []
+            : [];
+        if (!Array.isArray(rows) || rows.length === 0) continue;
+        walkWorkflowTree(rows, "", workflows, stages);
+        if (workflows.length > 0 || stages.length > 0) return { workflows, stages };
+      } catch {
+        // Next module / method.
+      }
+    }
+  }
+  return { workflows, stages };
+}
+
 export async function postReporting<T = unknown>(
   method: string,
   body: ReportingFilterDetail | Record<string, unknown>,
@@ -222,4 +408,25 @@ const FALLBACK_TABS: FilterTab[] = [
 
 export function fallbackFilterTabs(): FilterTab[] {
   return FALLBACK_TABS.map((tab) => ({ ...tab }));
+}
+
+const PARTY_FALLBACK_TABS: FilterTab[] = [
+  { Code: "OWNER", Title: "Owner", TabViewType: "MULTISELECT", DbFieldName: "ownerid" },
+  { Code: "LOCATION", Title: "Location", TabViewType: "MULTISELECT", DbFieldName: "locationid" },
+  { Code: "INDUSTRY", Title: "Industry", TabViewType: "MULTISELECT", DbFieldName: "industryid" },
+  { Code: "SECTOR", Title: "Sector", TabViewType: "MULTISELECT", DbFieldName: "sectorid" },
+  { Code: "RELATIONSHIPTYPE", Title: "Relationship", TabViewType: "MULTISELECT", DbFieldName: "relationshiptypeid" },
+  { Code: "CONTACTTYPE", Title: "Contact type", TabViewType: "MULTISELECT", DbFieldName: "contacttypeid" },
+  { Code: "SOURCE", Title: "Source", TabViewType: "MULTISELECT", DbFieldName: "sourceid" },
+  { Code: "SOURCECATEGORY", Title: "Source category", TabViewType: "MULTISELECT", DbFieldName: "sourcecategoryid" },
+  { Code: "DATE", Title: "Date", TabViewType: "DATEVIEW", DbFieldName: "createddate" },
+  { Code: "WORKFLOW", Title: "Workflow", TabViewType: "TREESELECT", DbFieldName: "workflowid" },
+];
+
+export function fallbackPartyFilterTabs(kind?: "COMPANY" | "CONTACT"): FilterTab[] {
+  const tabs = PARTY_FALLBACK_TABS.map((tab) => ({ ...tab }));
+  if (kind === "CONTACT") {
+    tabs.splice(1, 0, { Code: "COMPANY", Title: "Company", TabViewType: "MULTISELECT", DbFieldName: "companyid" });
+  }
+  return tabs;
 }

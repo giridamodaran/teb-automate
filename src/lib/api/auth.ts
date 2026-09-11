@@ -35,14 +35,6 @@ export async function login(input: LoginInput): Promise<TebLoginData> {
   return data;
 }
 
-export async function refreshToken(): Promise<string | null> {
-  const envelope = await tebRequest<{ Token?: string }>("MICRO", AUTH_PATHS.refreshToken, {
-    method: "GET",
-    skipRefresh: true,
-  });
-  return envelope.Data?.Token ?? null;
-}
-
 export async function logout(): Promise<void> {
   const user = getCurrentUser();
   const id = sessionUserId(user);

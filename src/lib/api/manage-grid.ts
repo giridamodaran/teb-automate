@@ -1,6 +1,24 @@
 import { tebRequest } from "@/lib/api/client";
-import type { TebApiEnvelope } from "@/lib/api/types";
-import type { ManageListPage, ManageListQuery } from "@/lib/grid/types";
+import { TebApiError, type TebApiEnvelope } from "@/lib/api/types";
+
+export interface ManageListQuery {
+  module: string;
+  code?: string;
+  action?: string;
+  primaryKey?: string;
+  pageNumber?: number;
+  pageSize?: number;
+  sortColumn?: string;
+  sortOrder?: boolean;
+  fullTextSearch?: string;
+  filterId?: string | number | null;
+  filterValues?: unknown;
+}
+
+export interface ManageListPage<T = Record<string, unknown>> {
+  rows: T[];
+  total: number;
+}
 
 function parseMaybeJson(raw: unknown): unknown {
   if (typeof raw !== "string") return raw;
@@ -18,7 +36,7 @@ function asRows(raw: unknown): Record<string, unknown>[] {
   }
   if (parsed && typeof parsed === "object") {
     const obj = parsed as Record<string, unknown>;
-    for (const key of ["QuoteDetail", "ItemDetail", "Data", "data", "value", "Value", "Records"]) {
+    for (const key of ["QuoteDetail", "TicketDetail", "WorkOrderDetail", "WorkorderDetail", "ItemDetail", "Data", "data", "value", "Value", "Records"]) {
       if (key in obj) {
         const inner = asRows(obj[key]);
         if (inner.length > 0) return inner;
@@ -43,32 +61,55 @@ export async function listManageRecords<T = Record<string, unknown>>(
   query: ManageListQuery,
 ): Promise<ManageListPage<T>> {
   if (query.action) {
-    const data: Record<string, unknown> = {
-      Module: query.module,
-      Code: query.code || query.action,
-      PrimaryKey: query.primaryKey ?? "Id",
-      Data: JSON.stringify({
-        PageNumber: query.pageNumber ?? 0,
-        PageSize: query.pageSize ?? 25,
-        OrderBy: query.sortColumn ?? "modifieddate",
-        SortOrder: query.sortOrder ?? true,
-        Search: query.fullTextSearch ?? "",
-      }),
-      Action: query.action,
-      ComponentCode: query.code || query.action,
+    const inner: Record<string, unknown> = {
+      PageNumber: query.pageNumber ?? 0,
+      PageSize: query.pageSize ?? 25,
+      OrderBy: query.sortColumn ?? "modifieddate",
+      SortOrder: query.sortOrder ?? true,
+      Search: query.fullTextSearch ?? "",
     };
-    if (query.filterId) data.FilterId = query.filterId;
-    if (query.filterValues) {
-      data.FilterModule = { FilterValues: query.filterValues };
-      if (!data.FilterId) data.FilterId = "";
+    if (query.filterId) inner.FilterId = query.filterId;
+    if (query.filterValues) inner.FilterValues = query.filterValues;
+
+    const buildBody = (withFilterModule: boolean) => {
+      const data: Record<string, unknown> = {
+        Module: query.module,
+        Code: query.code || query.action,
+        PrimaryKey: query.primaryKey ?? "Id",
+        Data: JSON.stringify(inner),
+        Action: query.action,
+        ComponentCode: query.code || query.action,
+      };
+      if (query.filterId) data.FilterId = query.filterId;
+      if (withFilterModule && query.filterValues) {
+        data.FilterModule = { FilterValues: query.filterValues };
+        if (!data.FilterId) data.FilterId = "";
+      }
+      return data;
+    };
+
+    const parsePage = (envelope: TebApiEnvelope) => {
+      const parsed = parseMaybeJson(envelope.Value ?? envelope.value ?? envelope.Data);
+      const rows = asRows(parsed) as T[];
+      return { rows, total: asTotal(parsed, rows.length) };
+    };
+
+    try {
+      const envelope = await tebRequest<TebApiEnvelope>("DYNAMIC", "AcGetData", {
+        method: "POST",
+        body: { data: buildBody(true) },
+      });
+      return parsePage(envelope);
+    } catch (err) {
+      if (query.filterValues && err instanceof TebApiError && err.status === 400) {
+        const envelope = await tebRequest<TebApiEnvelope>("DYNAMIC", "AcGetData", {
+          method: "POST",
+          body: { data: buildBody(false) },
+        });
+        return parsePage(envelope);
+      }
+      throw err;
     }
-    const envelope = await tebRequest<TebApiEnvelope>("DYNAMIC", "AcGetData", {
-      method: "POST",
-      body: { data },
-    });
-    const parsed = parseMaybeJson(envelope.Value ?? envelope.value ?? envelope.Data);
-    const rows = asRows(parsed) as T[];
-    return { rows, total: asTotal(parsed, rows.length) };
   }
 
   const data: Record<string, unknown> = {
