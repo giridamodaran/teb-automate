@@ -4,24 +4,46 @@ import {
   getSubscriberUserDetail,
   getUserLastLocation,
   getUserRouteHistories,
+  getWorkforceDaySnapshot,
+  joiningDate,
   lastLocationsForUsers,
+  listDayTracking,
   listTeamMembers,
+  listTrackingUserIds,
   listWorkforceUsers,
   locationCoords,
   locationLabel,
   personId,
   personName,
+  punchEndTime,
+  punchStartTime,
   startedDate,
+  type WorkforceSnapshotStage,
 } from "@/lib/api/workforce";
 import { dateWindow, startOfDay } from "@/lib/chat/date-filter";
 import { REPORT_ENTITIES } from "@/lib/chat/entities";
 import { buildDatasetSummary, pickCharts } from "@/lib/chat/charts";
-import type { MapPath, MapPin, ReportIntent, ReportResult } from "@/lib/chat/types";
+import type { ChartSeries, MapPath, MapPin, ReportIntent, ReportResult } from "@/lib/chat/types";
 
 const WORKFORCE_HELP =
-  "Ask about your team in plain language:\n• Find my team\n• Where is the user now\n• Where is Akash\n• Show route for me\n• Route of Priya";
+  "Ask about your team in plain language:\n• How many people started today\n• Members present yesterday\n• Find my team\n• Where is the user now\n• Show route for me";
 
-const WORKFORCE_SUGGESTIONS = ["Find my team", "Where is the user now", "Show route for me"];
+const WORKFORCE_SUGGESTIONS = [
+  "How many people started today",
+  "Members present yesterday",
+  "Find my team",
+  "Where is the user now",
+  "Show route for me",
+];
+
+const ATTENDANCE_COLUMNS = [
+  { key: "FullName", title: "Name" },
+  { key: "JobTitle", title: "Job title" },
+  { key: "Site", title: "Site" },
+  { key: "StartDate", title: "Start time", kind: "date" as const },
+  { key: "EndDate", title: "End time", kind: "date" as const },
+  { key: "Status", title: "Status" },
+];
 
 function asPeopleRow(row: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const merged = { ...row, ...extra };
@@ -33,15 +55,60 @@ function asPeopleRow(row: Record<string, unknown>, extra: Record<string, unknown
     ...merged,
     Id: personId(merged) || extra.Id || row.Id,
     FullName: name,
-    Title: name,
+    Title: extra.Title ?? row.Title ?? name,
     Email: extra.Email ?? row.Email ?? row.SubText,
     Status: extra.Status ?? row.Status ?? (place || "Active"),
-    Address: place,
+    Address: place || firstStringish(merged, ["StartAddress", "Site"]),
     Latitude: coords?.lat ?? merged.Latitude ?? merged.latitude,
     Longitude: coords?.lng ?? merged.Longitude ?? merged.longitude,
-    CreatedDate: extra.CreatedDate ?? row.CreatedDate ?? started,
-    DateOfJoining: started,
+    CreatedDate: extra.CreatedDate ?? row.CreatedDate ?? (punchStartTime(merged) || started),
+    DateOfJoining: joiningDate(merged) || started,
   };
+}
+
+function firstStringish(row: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value == null || typeof value === "object") continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function formatPunchClock(raw: string): string {
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  return date.toLocaleString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    ...(sameDay ? {} : { day: "numeric", month: "short" }),
+  });
+}
+
+function punchFocus(raw: string): "start" | "end" | "force" {
+  if (/\bforce\s+end/i.test(raw)) return "force";
+  if (/\b(end day|ended|punched out|punch out)\b/i.test(raw) && !/\b(start|present|punch(?:ed)? in)\b/i.test(raw)) {
+    return "end";
+  }
+  return "start";
+}
+
+function stageCount(stages: WorkforceSnapshotStage[], id: string): number | undefined {
+  const stage = stages.find((row) => row.id.toUpperCase() === id);
+  return stage ? stage.count : undefined;
+}
+
+function snapshotCharts(intent: ReportIntent, stages: WorkforceSnapshotStage[]): ChartSeries[] {
+  const points = stages
+    .map((stage) => ({ label: stage.name, value: stage.count }))
+    .filter((point) => Number.isFinite(point.value));
+  if (points.length === 0) return [];
+  const kind = intent.chart === "pie" ? "pie" : intent.chart === "line" ? "bar" : intent.stack === "count" ? "pie" : "bar";
+  return [{ kind, title: "Workforce day", points }];
 }
 
 function matchPerson(options: LookupOption[], needle: string): LookupOption | null {
@@ -119,12 +186,129 @@ type EmptyResult = (
     Partial<Pick<ReportResult, "amount" | "metric" | "currencySymbol" | "currencyCode" | "map" | "paths" | "mapTitle">>,
 ) => ReportResult;
 
+async function runPresentReport(intent: ReportIntent, emptyResult: EmptyResult): Promise<ReportResult> {
+  const when = intent.date?.label || "today";
+  const window = intent.date ? dateWindow(intent.date) : null;
+  const from = window?.from ?? startOfDay(new Date());
+  const to = window?.to ?? new Date();
+  const focus = punchFocus(intent.raw);
+  const chips = ["workforce", "present", when];
+  if (focus !== "start") chips.push(focus === "end" ? "ended" : "force end");
+  if (intent.personName) chips.push(intent.personName);
+
+  const userIds = await listTrackingUserIds();
+  const [snapshot, tracking] = await Promise.all([
+    getWorkforceDaySnapshot(from, to).catch(() => ({ total: 0, stages: [] as WorkforceSnapshotStage[] })),
+    userIds.length > 0
+      ? listDayTracking(from, to, userIds)
+      : Promise.resolve({ rows: [] as Record<string, unknown>[], total: 0 }),
+  ]);
+
+  const unique = new Map<string, Record<string, unknown>>();
+  for (const row of tracking.rows) {
+    const id = personId(row) || String(row.Id ?? personName(row));
+    const current = unique.get(id);
+    if (!current || punchStartTime(row) > punchStartTime(current)) unique.set(id, row);
+  }
+  let people = [...unique.values()].map((row) => {
+    const start = punchStartTime(row);
+    const end = punchEndTime(row);
+    return asPeopleRow(row, {
+      JobTitle: row.JobTitle,
+      Title: row.JobTitle || personName(row),
+      Site: row.Site,
+      StartDate: start,
+      EndDate: end,
+      Status: end ? "Ended" : start ? "Started" : "Not started",
+      CreatedDate: start,
+      Address: firstStringish(row, ["StartAddress", "Site", "EndAddress"]),
+    });
+  });
+  if (intent.personName) {
+    const want = intent.personName.toLowerCase();
+    people = people.filter(
+      (row) => personName(row).toLowerCase().includes(want) || personId(row).toLowerCase() === want,
+    );
+  }
+
+  const startedPeople = people.filter((row) => punchStartTime(row));
+  const endedPeople = people.filter((row) => punchEndTime(row));
+  const listed = focus === "end" ? endedPeople : focus === "force" ? [] : startedPeople;
+  const startCount = intent.personName ? startedPeople.length : (stageCount(snapshot.stages, "STARTDAY") ?? startedPeople.length);
+  const endCount = intent.personName ? endedPeople.length : (stageCount(snapshot.stages, "ENDDAY") ?? endedPeople.length);
+  const forceCount = intent.personName ? 0 : (stageCount(snapshot.stages, "FORCEDENDDAY") ?? 0);
+  const notStarted = stageCount(snapshot.stages, "NOTSTARTDAY");
+  const headline = focus === "end" ? endCount : focus === "force" ? forceCount : startCount;
+  const noun = headline === 1 ? "person" : "people";
+  const focusText =
+    focus === "end"
+      ? `${headline} ${noun} ended ${when}.`
+      : focus === "force"
+        ? `${headline} ${noun} were force-ended ${when}.`
+        : `${headline} ${noun} started ${when}.`;
+  const extra = [
+    focus === "start" ? `${endCount} ended` : `${startCount} started`,
+    `${forceCount} force ended`,
+    !intent.personName && notStarted != null ? `${notStarted} not started` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const text =
+    userIds.length === 0
+      ? "I couldn't find workforce users for this login, so I can't count who punched in."
+      : intent.personName
+        ? listed.length
+          ? `${intent.personName} ${focus === "end" ? "ended" : "started"} ${when}.`
+          : `${intent.personName} did not ${focus === "end" ? "punch out" : "punch in"} ${when}.`
+        : `${focusText} ${extra}.`;
+
+  const lines =
+    focus === "force"
+      ? [
+          forceCount > 0
+            ? `${forceCount} force-ended ${when}. Names for force end are on the workforce card, not the day list.`
+            : `Nobody was force-ended ${when}.`,
+        ]
+      : listed.slice(0, 12).map((row) => {
+          const start = punchStartTime(row);
+          const end = punchEndTime(row);
+          const clock = start ? formatPunchClock(start) : "no punch-in";
+          return end
+            ? `${personName(row)} — started ${clock}, ended ${formatPunchClock(end)}`
+            : `${personName(row)} — started ${clock}`;
+        });
+  if (listed.length > 12) lines.push(`and ${listed.length - 12} more`);
+
+  const summary = buildDatasetSummary(listed, headline, "count");
+  const charts =
+    snapshot.stages.length > 0
+      ? snapshotCharts(intent, snapshot.stages)
+      : pickCharts({ ...intent, chart: intent.chart || "bar" }, summary);
+
+  return {
+    ...emptyResult({
+      text,
+      chips,
+      total: headline,
+      rows: listed,
+      columns: ATTENDANCE_COLUMNS,
+      entity: "workforce",
+      stack: intent.stack === "count" ? "count" : "list",
+      suggestions: WORKFORCE_SUGGESTIONS,
+      applied: appliedSearch(intent),
+    }),
+    analysis: lines.length ? lines.join("\n") : `No matching people for ${when}.`,
+    charts,
+    summary,
+  };
+}
+
 export async function runWorkforceReport(intent: ReportIntent, emptyResult: EmptyResult): Promise<ReportResult> {
   const entity = REPORT_ENTITIES.workforce;
   if (intent.listFilters || /\buser filter\b/i.test(intent.raw)) {
     return emptyResult({
       text: WORKFORCE_HELP,
-      chips: ["workforce", "team", "where", "user", "route"],
+      chips: ["workforce", "team", "where", "user", "route", "present"],
       total: 0,
       rows: [],
       columns: entity.columns,
@@ -136,11 +320,15 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
   }
 
   const topic = intent.workforceTopic || "team";
+  if (topic === "started") {
+    return runPresentReport(intent, emptyResult);
+  }
+
   const [users, team] = await Promise.all([listWorkforceUsers(), listTeamMembers()]);
   const directory = users.length >= team.length ? users : mergeUnique(users, team);
   const chips = [
     "workforce",
-    topic === "location" ? "last location" : topic === "started" ? "start date" : topic,
+    topic === "location" ? "last location" : topic === "joined" ? "joining date" : topic,
   ];
   if (intent.personName) chips.push(intent.personName);
   if (intent.date) chips.push(intent.date.label);
@@ -285,11 +473,11 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
     };
   }
 
-  if (topic === "started") {
+  if (topic === "joined") {
     const extras = directory.map((option) =>
       asPeopleRow({ Id: option.id, FullName: option.label, ...(option.extra ?? {}) }),
     );
-    const missing = extras.filter((row) => !startedDate(row)).slice(0, 40);
+    const missing = extras.filter((row) => !joiningDate(row)).slice(0, 40);
     const fetched = await Promise.all(
       missing.map(async (row) => {
         const id = personId(row);
@@ -303,19 +491,19 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
     const window = intent.date ? dateWindow(intent.date) : null;
     const rows = window
       ? details.filter((row) => {
-          const raw = startedDate(row);
+          const raw = joiningDate(row);
           return raw ? inWindow(raw, window.from, window.to) : false;
         })
       : details;
     const summary = buildDatasetSummary(rows, rows.length, "count");
     const lines = rows
       .slice(0, 12)
-      .map((row) => `${personName(row)} — started ${startedDate(row) || "unknown"}`);
+      .map((row) => `${personName(row)} — joined ${joiningDate(row) || "unknown"}`);
     return {
       ...emptyResult({
         text: window
-          ? `${rows.length} people started ${intent.date?.label ?? "in that period"}.`
-          : `${rows.length} people with a start date.`,
+          ? `${rows.length} people joined ${intent.date?.label ?? "in that period"}.`
+          : `${rows.length} people with a joining date.`,
         chips,
         total: rows.length,
         rows,
@@ -325,7 +513,7 @@ export async function runWorkforceReport(intent: ReportIntent, emptyResult: Empt
         suggestions: WORKFORCE_SUGGESTIONS,
         applied: appliedSearch(intent),
       }),
-      analysis: lines.length ? lines.join("\n") : "No people matched that start date.",
+      analysis: lines.length ? lines.join("\n") : "No people matched that joining date.",
       charts: pickCharts({ ...intent, chart: "line" }, summary),
       summary,
     };

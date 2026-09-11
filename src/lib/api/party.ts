@@ -74,6 +74,26 @@ function firstText(row: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
+/** GETCOMPANYDETAIL / GETCONTACTDETAIL put a UserId in OwnerName; the list API returns the person name. */
+function looksLikeRecordId(value: string): boolean {
+  const text = value.trim();
+  if (!text || /\s/.test(text)) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
+  if (/^[0-9a-f]{24}$/i.test(text)) return true;
+  return false;
+}
+
+export function ownerDisplayName(row: Record<string, unknown>, owners?: LookupOption[]): string {
+  const named = firstText(row, ["OwnerName", "Owner"]);
+  if (named && !looksLikeRecordId(named)) return named;
+  const ids = [firstText(row, ["OwnerId", "ownerid"]), named].filter((value) => looksLikeRecordId(value));
+  for (const id of ids) {
+    const hit = owners?.find((option) => option.id === id);
+    if (hit?.label && !looksLikeRecordId(hit.label)) return hit.label;
+  }
+  return "";
+}
+
 export function partyKindFromEntity(key: "company" | "contact"): PartyKind {
   return key === "contact" ? "CONTACT" : "COMPANY";
 }
@@ -135,7 +155,7 @@ export function extractEmails(row: Record<string, unknown>): PartyChannel[] {
   return collectChannels(row, "email", "EmailDetail", ["Email", "EmailId", "WorkEmail"]);
 }
 
-export function toPartyCard(row: Record<string, unknown>, kind: PartyKind): PartyCard | null {
+export function toPartyCard(row: Record<string, unknown>, kind: PartyKind, owners?: LookupOption[]): PartyCard | null {
   const id = firstText(row, ["Id", "id", "CompanyId", "ContactId"]);
   if (!id) return null;
   const name = partyDisplayName(row);
@@ -151,7 +171,7 @@ export function toPartyCard(row: Record<string, unknown>, kind: PartyKind): Part
     kind: kind === "CONTACT" ? "contact" : "company",
     name,
     subtitle: subtitle || undefined,
-    owner: firstText(row, ["OwnerName", "Owner"]) || undefined,
+    owner: ownerDisplayName(row, owners) || undefined,
     location: firstText(row, ["LocationName", "CompanyLocationName", "City", "Address"]) || undefined,
     industry: firstText(row, ["IndustryName", "SectorName"]) || undefined,
     phones: extractPhones(row),
@@ -194,14 +214,14 @@ function relatedRows(row: Record<string, unknown>): Record<string, unknown>[] {
   return unique;
 }
 
-export function toPartyProfile(row: Record<string, unknown>, kind: PartyKind): PartyProfile | null {
-  const card = toPartyCard(row, kind);
+export function toPartyProfile(row: Record<string, unknown>, kind: PartyKind, owners?: LookupOption[]): PartyProfile | null {
+  const card = toPartyCard(row, kind, owners);
   if (!card) return null;
   const fields: Array<{ label: string; value: string }> = [];
   const used = new Set<string>();
   for (const field of PROFILE_FIELDS) {
     if (kind === "COMPANY" && field.label === "Company") continue;
-    const value = firstText(row, field.keys);
+    const value = field.label === "Owner" ? ownerDisplayName(row, owners) : firstText(row, field.keys);
     if (!value || used.has(field.label) || value === card.name) continue;
     used.add(field.label);
     fields.push({ label: field.label, value });
@@ -211,7 +231,7 @@ export function toPartyProfile(row: Record<string, unknown>, kind: PartyKind): P
     ...card,
     fields,
     related: relatedRows(row)
-      .map((item) => toPartyCard(item, relatedKind))
+      .map((item) => toPartyCard(item, relatedKind, owners))
       .filter((item): item is PartyCard => Boolean(item)),
     companyId: firstText(row, ["CompanyId"]) || undefined,
     companyName: firstText(row, ["CompanyName"]) || undefined,

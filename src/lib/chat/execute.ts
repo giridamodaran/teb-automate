@@ -552,8 +552,10 @@ function chipsFor(intent: ReportIntent, extra: string[]): string[] {
       intent.workforceTopic === "location"
         ? "last location"
         : intent.workforceTopic === "started"
-          ? "start date"
-          : intent.workforceTopic,
+          ? "present"
+          : intent.workforceTopic === "joined"
+            ? "joining date"
+            : intent.workforceTopic,
     );
   }
   if (intent.partyTopic && intent.partyTopic !== "list") chips.push(intent.partyTopic);

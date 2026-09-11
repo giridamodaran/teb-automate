@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChartSeries } from "@/lib/chat/types";
+import { formatMonthAxisLabel } from "@/lib/chat/charts";
 import { formatCompactAmount } from "@/lib/money";
 
 const PALETTE = ["#086fb8", "#0f766e", "#c2410c", "#7c3aed", "#b45309", "#0369a1", "#be123c", "#365314"];
@@ -84,26 +85,31 @@ function PieChart({ series }: { series: ChartSeries }) {
 }
 
 function LineChart({ series }: { series: ChartSeries }) {
-  const width = 320;
-  const height = 140;
+  const width = 360;
+  const height = 148;
   const max = maxValue(series.points);
-  const pad = 16;
-  const innerW = width - pad * 2;
-  const innerH = height - pad;
+  const padX = 18;
+  const padTop = 22;
+  const padBottom = 28;
+  const innerW = width - padX * 2;
+  const innerH = height - padTop - padBottom;
   const coords = series.points.map((point, index) => {
-    const x = pad + (series.points.length === 1 ? innerW / 2 : (index / (series.points.length - 1)) * innerW);
-    const y = pad + innerH - (point.value / max) * innerH;
+    const x = padX + (series.points.length === 1 ? innerW / 2 : (index / (series.points.length - 1)) * innerW);
+    const y = padTop + innerH - (point.value / max) * innerH;
     return { x, y, ...point };
   });
   const polyline = coords.map((point) => `${point.x},${point.y}`).join(" ");
   return (
-    <svg viewBox={`0 0 ${width} ${height + 20}`} className="h-40 w-full" role="img" aria-label={series.title}>
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-44 w-full" role="img" aria-label={series.title}>
       <polyline fill="none" stroke="#086fb8" strokeWidth="2" points={polyline} />
       {coords.map((point) => (
         <g key={point.label}>
           <circle cx={point.x} cy={point.y} r="3" fill="#086fb8" />
-          <text x={point.x} y={height + 14} textAnchor="middle" className="fill-slate-500" fontSize="8">
-            {point.label.slice(5)}
+          <text x={point.x} y={Math.max(11, point.y - 8)} textAnchor="middle" className="fill-slate-700" fontSize="9">
+            {labelValue(point.value, series.currencySymbol)}
+          </text>
+          <text x={point.x} y={height - 8} textAnchor="middle" className="fill-slate-500" fontSize="8">
+            {formatMonthAxisLabel(point.label)}
           </text>
         </g>
       ))}

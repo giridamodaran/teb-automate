@@ -158,7 +158,7 @@ export const REPORT_ENTITIES: Record<ReportEntityKey, ReportEntity> = {
     key: "workforce",
     title: "Workforce",
     plural: "workforce",
-    keywords: ["work force", "workforce", "wforce", "field team", "my team", "team members", "find my team", "route"],
+    keywords: ["work force", "workforce", "wforce", "field team", "my team", "team members", "find my team", "route", "punched in"],
     dynamicModule: "WorkForceManagement",
     listModule: "TEBWorkforce",
     workflowModules: ["TEBWorkforce", "WorkForceManagement", "WorkForeceManagement"],

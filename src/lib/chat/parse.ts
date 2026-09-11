@@ -82,11 +82,11 @@ function parseDate(text: string): DateRangeIntent | undefined {
     return betweenRange(field, new Date(isoBetween[1]), new Date(isoBetween[2]), `${isoBetween[1]} – ${isoBetween[2]}`);
   }
   const isoDay = text.match(/\b(?:on\s+)?(\d{4}-\d{2}-\d{2})\b/i);
-  if (isoDay && /\b(started|joined|joining|start date)\b/i.test(text)) {
+  if (isoDay && /\b(started|joined|joining|start date|present|punch|attendance|start day|end day)\b/i.test(text)) {
     const day = new Date(isoDay[1]);
     if (!Number.isNaN(day.getTime())) return betweenRange(field, day, day, isoDay[1]);
   }
-  const startedRest = text.match(/\b(?:started|joined)\s+(?:on\s+)?([0-9]{1,2}[\/\-.][0-9]{1,2}[\/\-.][0-9]{2,4})\b/i);
+  const startedRest = text.match(/\b(?:started|joined|present)\s+(?:on\s+)?([0-9]{1,2}[\/\-.][0-9]{1,2}[\/\-.][0-9]{2,4})\b/i);
   if (startedRest) {
     const day = new Date(startedRest[1]);
     if (!Number.isNaN(day.getTime())) return betweenRange(field, day, day, startedRest[1]);
@@ -95,7 +95,7 @@ function parseDate(text: string): DateRangeIntent | undefined {
 }
 
 function parseMetric(text: string): "count" | "value" | undefined {
-  if (/\b(how many|number of|count of|record count)\b/i.test(text) && !/\bvalue\b/i.test(text)) return "count";
+  if (/\b(how many|number of|no\.?\s*of|count of|record count)\b/i.test(text) && !/\bvalue\b/i.test(text)) return "count";
   if (
     /\b(by value|quote value|invoice value|order value|ticket value|total value|total amount|net amount|grand total|worth|revenue|pipeline|sum)\b/i.test(text) ||
     /\bvalues?\b/i.test(text)
@@ -263,13 +263,28 @@ function parseWorkforce(text: string): { topic?: WorkforceTopic; personName?: st
   const isWhere =
     /\b(where is|where are|last location|current location|on the map|on a map|signed in|last known)\b/i.test(text);
   const isTeam = /\b(find my team|my team|team members|who reports to me|direct reports)\b/i.test(text);
+  const isJoined = /\b(joined on|joining date|date of joining|who joined)\b/i.test(text);
+  const isPresent =
+    !isJoined &&
+    (/\b(?:people|members|users|employees?)\s+(?:have\s+)?started\b/i.test(text) ||
+      /\b(?:who|users?|people)\s+started\b/i.test(text) ||
+      /\bhave\s+started\b/i.test(text) ||
+      /\b(?:members?|people)\s+present\b/i.test(text) ||
+      /\bpunch(?:ed)?\s+(?:in|out)\b/i.test(text) ||
+      /\bstart(?:ed)?\s+day\b/i.test(text) ||
+      /\bend(?:ed)?\s+day\b/i.test(text) ||
+      /\b(?:who|people|members)\s+ended\b/i.test(text) ||
+      /\bforce\s+end\b/i.test(text) ||
+      /\bstarted on\b|\bstart date\b/i.test(text) ||
+      (/\bno\.?\s*of\s+(?:people|members|users)\b/i.test(text) && /\bstart/i.test(text)) ||
+      (/\bhow many\s+(?:people|members|users)\b/i.test(text) && /\b(start|present|end|punch|attend)/i.test(text)) ||
+      /\bworkforce attendance\b|\battendance (?:today|yesterday|this month|last month|for)\b/i.test(text));
   if (isRoute && !isTeam) return { entity: "workforce", topic: "route", personName: personName || "me" };
+  if (isPresent) return { entity: "workforce", topic: "started", personName };
+  if (isJoined) return { entity: "workforce", topic: "joined", personName };
   if (isWhere) return { entity: "workforce", topic: "location", personName: personName || "me" };
   if (personName && !isTeam) return { entity: "workforce", topic: "location", personName };
   if (isTeam) return { entity: "workforce", topic: "team", personName };
-  if (/\b(people started|users started|who started|started on|joined on|joining date|start date)\b/i.test(text)) {
-    return { entity: "workforce", topic: "started", personName };
-  }
   if (/\b(workforce|work force|wforce|field team|user filter)\b/i.test(text)) {
     return { entity: "workforce", topic: "team", personName };
   }
@@ -298,7 +313,10 @@ function parseParty(text: string): { entity?: ReportEntityKey; topic?: PartyTopi
   const hasCompany = /\b(compan(?:y|ies)|accounts?)\b/i.test(text);
   const hasContact =
     /\b(contacts?)\b/i.test(text) ||
-    (/\bpeople\b/i.test(text) && !/\b(people started|users started|who started|workforce)\b/i.test(text));
+    (/\bpeople\b/i.test(text) &&
+      !/\b(people started|users started|who started|have started|members present|workforce|punched|attendance)\b/i.test(
+        text,
+      ));
   if (!hasCompany && !hasContact) {
     const phoneOf = text.match(/\b(?:phone|e-?mail|number|call)\s+(?:of|for)\s+(.+)$/i);
     const search = parsePartyName(phoneOf?.[1]);
@@ -388,7 +406,7 @@ export function isGreeting(text: string): boolean {
 }
 
 export const HELP_TEXT =
-  "Ask in plain language about Companies, Contacts, Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, Workforce, or the Management Dashboard.\n\nYou can mention owner, assignee, workflow status or stage, dates, and items. Examples:\n• Companies created last 7 days\n• Company profile for Acme\n• View quote Q-1024\n• Quotes in Follow Up\n• Work orders in Assign to Engineer\n• Team snapshot this month\n• Find my team";
+  "Ask in plain language about Companies, Contacts, Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, Workforce, or the Management Dashboard.\n\nYou can mention owner, assignee, workflow status or stage, dates, and items. Examples:\n• Companies created last 7 days\n• Company profile for Acme\n• View quote Q-1024\n• Quotes in Follow Up\n• Work orders in Assign to Engineer\n• Team snapshot this month\n• How many people started today\n• Find my team";
 
 export function parseQuestion(
   text: string,
@@ -415,7 +433,9 @@ export function parseQuestion(
   const base = !standalone && previous ? previous : undefined;
   const owner = parseOwner(raw);
   const assignee = parseAssignee(raw);
-  const date = parseDate(raw);
+  const date =
+    parseDate(raw) ||
+    (workforce.topic === "started" ? betweenRange("CREATEDFILTER", new Date(), new Date(), "today") : undefined);
   const saved = parseSavedFilter(raw);
   const search = quote.search || party.search || parseSearch(raw);
   const stages = parseStages(raw);

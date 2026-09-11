@@ -8,6 +8,7 @@ import {
   searchParties,
   toPartyCard,
   toPartyProfile,
+  ownerDisplayName,
   type PartyCard,
   type PartyKind,
   type PartyProfile,
@@ -23,7 +24,7 @@ import type { TebUserDetail } from "@/lib/api/types";
 import { aliasFamily, matchTab, tabPhrases } from "@/lib/chat/filter-fields";
 import { REPORT_ENTITIES } from "@/lib/chat/entities";
 import { dateWindow, modeLabel, toLiveDateFilter } from "@/lib/chat/date-filter";
-import { buildDatasetSummary, localAnalysis, rowDate, rowOwner } from "@/lib/chat/charts";
+import { buildDatasetSummary, formatMonthAxisLabel, localAnalysis, rowDate, rowOwner } from "@/lib/chat/charts";
 import type { ChatHistoryTurn } from "@/lib/chat/journey";
 import type {
   ChartSeries,
@@ -97,11 +98,11 @@ function appliedOf(intent: ReportIntent, filterId: string | null, filterValues: 
   return { filterId, filterValues, fullTextSearch: intent.search || "" };
 }
 
-function cardsFromRows(rows: Record<string, unknown>[], kind: PartyKind, limit = 8): PartyCard[] {
+function cardsFromRows(rows: Record<string, unknown>[], kind: PartyKind, owners?: LookupOption[], limit = 8): PartyCard[] {
   const cards: PartyCard[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
-    const card = toPartyCard(row, kind);
+    const card = toPartyCard(row, kind, owners);
     if (!card || seen.has(card.id)) continue;
     seen.add(card.id);
     cards.push(card);
@@ -110,7 +111,7 @@ function cardsFromRows(rows: Record<string, unknown>[], kind: PartyKind, limit =
   return cards;
 }
 
-function partyCharts(rows: Record<string, unknown>[]): ChartSeries[] {
+function partyCharts(rows: Record<string, unknown>[], owners?: LookupOption[]): ChartSeries[] {
   const count = (labelOf: (row: Record<string, unknown>) => string, title: string, kind: ChartSeries["kind"]): ChartSeries | null => {
     const map = new Map<string, number>();
     for (const row of rows) {
@@ -129,7 +130,7 @@ function partyCharts(rows: Record<string, unknown>[]): ChartSeries[] {
     "By industry",
     "pie",
   );
-  const owner = count((row) => rowOwner(row), "By owner", "bar");
+  const owner = count((row) => ownerDisplayName(row, owners) || "Unassigned", "By owner", "bar");
   const monthMap = new Map<string, number>();
   for (const row of rows) {
     const date = rowDate(row) || rowDate(row, "updated");
@@ -138,8 +139,8 @@ function partyCharts(rows: Record<string, unknown>[]): ChartSeries[] {
     monthMap.set(key, (monthMap.get(key) || 0) + 1);
   }
   const months = [...monthMap.entries()]
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([key, value]) => ({ label: formatMonthAxisLabel(key), value }));
   if (industry) charts.push(industry);
   if (owner) charts.push(owner);
   if (months.length > 1) charts.push({ kind: "line", title: "Created by month", points: months });
@@ -240,6 +241,7 @@ async function profileFor(
   kind: PartyKind,
   id: string,
   intent: ReportIntent,
+  owners?: LookupOption[],
 ): Promise<{ row: Record<string, unknown>; profile: PartyProfile; kind: PartyKind } | null> {
   const row = await getPartyDetail(kind, id);
   if (!row) return null;
@@ -247,11 +249,11 @@ async function profileFor(
     const companyId = String(row.CompanyId ?? "");
     if (companyId) {
       const company = await getPartyDetail("COMPANY", companyId);
-      const profile = company ? toPartyProfile(company, "COMPANY") : null;
+      const profile = company ? toPartyProfile(company, "COMPANY", owners) : null;
       if (company && profile) return { row: company, profile, kind: "COMPANY" };
     }
   }
-  const profile = toPartyProfile(row, kind);
+  const profile = toPartyProfile(row, kind, owners);
   return profile ? { row, profile, kind } : null;
 }
 
@@ -374,7 +376,7 @@ export async function runPartyReport(
   try {
     if ((topic === "profile" || topic === "search") && needle) {
       if (isGuid(needle)) {
-        const loaded = (await profileFor(kind, needle, intent)) || (await profileFor(otherKind(kind), needle, intent));
+        const loaded = (await profileFor(kind, needle, intent, owners)) || (await profileFor(otherKind(kind), needle, intent, owners));
         if (loaded) {
           extraChips.push("profile");
           return emptyResult({
@@ -436,8 +438,8 @@ export async function runPartyReport(
       const profileSource = exact.length === 1 ? exact[0] : rows.length === 1 ? rows[0] : null;
       if ((topic === "profile" || /\b(profile|phone|e-?mail|number|call)\b/i.test(intent.raw)) && profileSource) {
         const id = String(profileSource.Id ?? profileSource.id ?? "");
-        const loaded = id ? await profileFor(activeKind, id, intent) : null;
-        const profile = loaded?.profile || toPartyProfile(profileSource, activeKind);
+        const loaded = id ? await profileFor(activeKind, id, intent, owners) : null;
+        const profile = loaded?.profile || toPartyProfile(profileSource, activeKind, owners);
         if (profile) {
           return emptyResult({
             text: `${profile.name} — tap a number to call or an email to write.`,
@@ -475,7 +477,7 @@ export async function runPartyReport(
         total = refined.length;
         extraChips.push("narrowed to matching rows");
       }
-      const cards = cardsFromRows(rows, activeKind);
+      const cards = cardsFromRows(rows, activeKind, owners);
       const summary = buildDatasetSummary(rows, total, "count", null, false);
       const noun = REPORT_ENTITIES[activeKind === "CONTACT" ? "contact" : "company"];
       return {
@@ -492,7 +494,7 @@ export async function runPartyReport(
         currencyCode: "",
         rows,
         columns: noun.columns,
-        charts: partyCharts(rows),
+        charts: partyCharts(rows, owners),
         summary,
         entity: noun.key,
         stack: intent.stack,
@@ -527,7 +529,7 @@ export async function runPartyReport(
       total = refined.length;
       extraChips.push("narrowed to matching rows");
     }
-    const cards = cardsFromRows(rows, kind);
+    const cards = cardsFromRows(rows, kind, owners);
     const summary = buildDatasetSummary(rows, total, "count", null, false);
     const qualifier = [
       ...(intent.date ? [modeLabel(intent.date)] : []),
@@ -548,7 +550,7 @@ export async function runPartyReport(
       currencyCode: "",
       rows,
       columns: entity.columns,
-      charts: partyCharts(rows),
+      charts: partyCharts(rows, owners),
       summary,
       entity: entity.key,
       stack: intent.stack,

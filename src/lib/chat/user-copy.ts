@@ -4,7 +4,7 @@ import { REPORT_ENTITIES } from "@/lib/chat/entities";
 const DEFAULT_REPORT_ERROR = "I couldn't load that. Try another question, or a simpler filter.";
 
 const TECHNICAL =
-  /\b(DYNAMIC|MANAGE|AcGetData|AcAddDetail|FilterValues|FilterDetail|FilterId|GetFilterControls|GetTeamBased\w*|GetModuleWise\w*|GetUserTracking\w*|DATEFILTER|OWNERFILTER|ScreenCode|ModuleCode|CorrelationId|TEB[A-Z][a-zA-Z]+|[A-Za-z]+Management|SNAPSHOT|gateway|OPENAI|ANTHROPIC)\b|\.env|https?:\/\/|Request failed\s*\(\d+\)|\{[\s\S]*\}/i;
+  /\b(DYNAMIC|MANAGE|AcGetData|AcAddDetail|FilterValues|FilterDetail|FilterId|GetFilterControls|GetTeamBased\w*|GetModuleWise\w*|GetUserTracking\w*|GetTrackingSummary|GetOverviewWorkforceSnapshot|DATEFILTER|OWNERFILTER|ScreenCode|ModuleCode|CorrelationId|TEB[A-Z][a-zA-Z]+|[A-Za-z]+Management|SNAPSHOT|gateway|OPENAI|ANTHROPIC)\b|\.env|https?:\/\/|Request failed\s*\(\d+\)|\{[\s\S]*\}/i;
 
 export function userFacingAskError(err: unknown): string {
   if (err instanceof TebApiError) return friendlyFromText(err.message, err.status);

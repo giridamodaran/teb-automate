@@ -140,6 +140,23 @@ function monthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
+const MONTH_AXIS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"] as const;
+
+/** Axis labels like `Jul 26` / `Sept 26` — not `07` or `2026-07`. */
+export function formatMonthAxisLabel(label: string): string {
+  const iso = label.trim().match(/^(\d{4})-(\d{1,2})$/);
+  if (iso) {
+    const month = Number(iso[2]);
+    if (month >= 1 && month <= 12) return `${MONTH_AXIS[month - 1]} ${iso[1].slice(-2)}`;
+  }
+  const monthOnly = label.trim().match(/^(\d{1,2})$/);
+  if (monthOnly) {
+    const month = Number(monthOnly[1]);
+    if (month >= 1 && month <= 12) return MONTH_AXIS[month - 1];
+  }
+  return label;
+}
+
 export function buildDatasetSummary(
   rows: Record<string, unknown>[],
   total: number,
@@ -155,8 +172,8 @@ export function buildDatasetSummary(
     byMonthMap.set(key, (byMonthMap.get(key) || 0) + (metric === "value" ? rowAmount(row, preferReceived) : 1));
   }
   const byMonth = [...byMonthMap.entries()]
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([key, value]) => ({ label: formatMonthAxisLabel(key), value }));
   const { symbol, code } = mappedCurrency(rows[0] ?? null, preferredCurrency);
   const amount = rows.reduce((sum, row) => sum + rowAmount(row, preferReceived), 0);
 

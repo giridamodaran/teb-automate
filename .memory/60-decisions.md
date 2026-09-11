@@ -1,5 +1,9 @@
 # Decisions
 
+## 2026-09-11 — Workforce “people started {date}” is punch-in, not joining date
+
+Ask maps `how many people started today` / `members present` / `no of people have started {date}` to the Management Dashboard Workforce card plus Workforce Day Manage. Counts: MICRO `GetOverviewWorkforceSnapshot` stages Start Day / End Day / Force End Day / Not Started. Names: `GetTrackingSummary` with `StartEventTime` / `EndEventTime` / dropdown `Id` as `UserIds`. Do not use `DateOfJoining`. Keep `joined on` / `joining date` as HR joining. Attendance/Month (`GetSubscriberUserAttendance`) is the same domain but needs `MemberIds`; day questions use tracking + snapshot.
+
 ## 2026-09-11 — Quote view in Ask is read-only plus an Open-in-TEB link
 
 Do not rebuild the Quote composer in this clone. Ask quote view uses live read APIs only: Dynamic `GETQUOTEDETAIL` / `VIEWCONSUMEDITEM` / `GETQUOTEACTIVITY` (EstimationManagement), MICRO `getsubscribertemplatedropdown` (unwrapped `{ Module: TEBQuote }`) and `GetSubscriberNotes` (wrapped `{ data: { EntityId, Module: TEBQuote } }`). Open the record in the live Angular app at `https://live.teb.cloud/sales/quote/view/{id}`. Do not post `CHANGEQUOTESTATUS` or item writes from Ask.

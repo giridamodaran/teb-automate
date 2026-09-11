@@ -73,7 +73,12 @@ const TOPIC_QUESTIONS: Record<JourneyTopicId, string[]> = {
     "Actions where owner = me",
     "What filters can I use on actions?",
   ],
-  workforce: ["Find my team", "Where is the user now", "Show route for me"],
+  workforce: [
+    "How many people started today",
+    "Find my team",
+    "Where is the user now",
+    "Show route for me",
+  ],
   company: [
     "Companies created last 7 days",
     "Search companies",

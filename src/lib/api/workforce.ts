@@ -392,6 +392,216 @@ export function startedDate(row: Record<string, unknown>): string {
   ]);
 }
 
+/** HR joining date only — tracking `StartDate` is punch-in, not DateOfJoining. */
+export function joiningDate(row: Record<string, unknown>): string {
+  return firstString(row, ["DateOfJoining", "JoiningDate", "JoinDate", "OnboardDate", "CreatedDate", "createddate"]);
+}
+
+export function punchStartTime(row: Record<string, unknown>): string {
+  return firstString(row, ["StartDate", "StartEventTime", "EventTime"]);
+}
+
+export function punchEndTime(row: Record<string, unknown>): string {
+  return firstString(row, ["EndDate", "EndEventTime"]);
+}
+
+function calendarDay(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function uniqueIds(values: string[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const value of values) {
+    const id = value.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+/** Live Day Manage posts dropdown `Id` as UserIds (not a different UserId field). */
+export async function listTrackingUserIds(): Promise<string[]> {
+  const fromDropdown = async (path: string, method: "GET" | "POST" = "GET", body?: unknown) => {
+    const envelope = await tebRequest("MICRO", path, method === "POST" ? { method, body } : undefined);
+    return asRows(envelope.Data ?? envelope.value ?? envelope.Value ?? envelope)
+      .map((row) => firstString(row, ["Id"]))
+      .filter(Boolean);
+  };
+  try {
+    const ids = await fromDropdown("gateway/admin/GetUserDropdown?Module=TEBWorkforce&IsWithIcon=true");
+    if (ids.length > 0) return uniqueIds(ids);
+  } catch {
+    // POST dropdown is the live fallback.
+  }
+  try {
+    const ids = await fromDropdown("gateway/admin/GetUserDropdown", "POST", { Module: "TEBWorkforce", IsWithIcon: true });
+    if (ids.length > 0) return uniqueIds(ids);
+  } catch {
+    // Team / subscriber lists still identify people for tracking.
+  }
+  const people = await listWorkforceUsers();
+  return uniqueIds(people.map((row) => row.id));
+}
+
+export interface WorkforceSnapshotStage {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export async function getWorkforceDaySnapshot(
+  from: Date,
+  to: Date,
+): Promise<{ total: number; stages: WorkforceSnapshotStage[] }> {
+  const fromDay = calendarDay(from);
+  const toDay = calendarDay(to);
+  const envelope = await tebRequest<Record<string, unknown>>("MICRO", "gateway/reporting/GetOverviewWorkforceSnapshot", {
+    method: "POST",
+    body: {
+      FilterId: "",
+      IsActive: true,
+      FullTextSearch: "",
+      WorkflowFilters: [],
+      DateFilter: {
+        FieldType: "CREATEDFILTER",
+        Mode: "BETWEEN",
+        DateRange: { FromDate: fromDay, ToDate: toDay },
+        DatePeriod: { Period: 0, PeriodType: "" },
+        AnyUpdate: { UpdateOn: [], PeriodType: "LAST", IsNotUpdate: false },
+        FinancePeriod: "",
+      },
+      LocationFilter: { Sites: [], Cities: [], Countries: [], Counties: [] },
+      OwnerAssigneeFilter: { Owners: [], Assignees: [] },
+      Itemfilter: {},
+      MasterFilter: {},
+      CustomFieldFilters: [],
+      Apps: [],
+      ChartCode: "WORKFORCESNAPSHOT",
+      ModuleCode: "TEBWorkforce",
+      PageNumber: 0,
+      PageSize: 25,
+    },
+    timeoutMs: 30000,
+  });
+  const data = asRecord(parseMaybeJson(envelope.Data ?? envelope.value ?? envelope.Value)) ?? {};
+  const stages = asRows(data.Stages).map((row) => ({
+    id: firstString(row, ["StageId", "Id", "Code"]),
+    name: firstString(row, ["StageName", "Title", "Name"]) || "Stage",
+    count: Number(row.TotalCount ?? row.Count ?? 0) || 0,
+  }));
+  return {
+    total: Number(data.TotalCount ?? stages.reduce((sum, stage) => sum + stage.count, 0)) || 0,
+    stages,
+  };
+}
+
+function trackingBody(from: Date, to: Date, userIds: string[], pageNumber: number, pageSize: number) {
+  const start = new Date(from);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(to);
+  end.setHours(23, 59, 59, 999);
+  return {
+    Data: {
+      StartEventTime: start.toISOString(),
+      EndEventTime: end.toISOString(),
+      UserIds: userIds,
+      EventTypes: [],
+    },
+    PageNumber: pageNumber,
+    PageSize: pageSize,
+    SortColumn: "",
+    SortOrder: true,
+  };
+}
+
+function envelopeTotal(envelope: { TotalCount?: unknown; TotalRecord?: unknown; Data?: unknown }, fallback: number): number {
+  const total = Number(envelope.TotalCount ?? envelope.TotalRecord);
+  if (Number.isFinite(total) && total >= 0) return total;
+  const data = asRecord(envelope.Data);
+  const nested = Number(data?.TotalCount ?? data?.TotalRecord);
+  if (Number.isFinite(nested) && nested >= 0) return nested;
+  return fallback;
+}
+
+/** Day Manage list: last 90 days → GetTrackingSummary, older → GetArchiveTrackingSummary. */
+export async function listDayTracking(from: Date, to: Date, userIds: string[]): Promise<{ rows: Record<string, unknown>[]; total: number }> {
+  if (userIds.length === 0) return { rows: [], total: 0 };
+  const ninety = new Date();
+  ninety.setHours(0, 0, 0, 0);
+  ninety.setDate(ninety.getDate() - 90);
+  const start = new Date(from);
+  start.setHours(0, 0, 0, 0);
+  const archive = start < ninety;
+  const paths = archive
+    ? ["gateway/workforce/GetArchiveTrackingSummary", "gateway/workforce/GetTrackingSummary"]
+    : ["gateway/workforce/GetTrackingSummary", "gateway/workforce/GetArchiveTrackingSummary"];
+  const pageSize = 100;
+  for (const path of paths) {
+    const rows: Record<string, unknown>[] = [];
+    let total = 0;
+    try {
+      for (let page = 0; page < 20; page += 1) {
+        const envelope = await tebRequest<Record<string, unknown>[]>("MICRO", path, {
+          method: "POST",
+          body: trackingBody(from, to, userIds, page, pageSize),
+          timeoutMs: 30000,
+        });
+        const batch = asRows(envelope.Data ?? envelope.value ?? envelope.Value);
+        if (page === 0) total = envelopeTotal(envelope, batch.length);
+        rows.push(...batch);
+        if (batch.length === 0 || rows.length >= total) break;
+      }
+      return { rows, total: total || rows.length };
+    } catch {
+      // Archive vs summary depends on how old the day is.
+    }
+  }
+  return { rows: [], total: 0 };
+}
+
+export async function listMonthAttendance(
+  from: Date,
+  to: Date,
+  memberIds: string[],
+  teamIds: string[] = [],
+): Promise<Record<string, unknown>[]> {
+  if (memberIds.length === 0) return [];
+  const start = new Date(from);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(to);
+  end.setHours(23, 59, 59, 999);
+  try {
+    const envelope = await tebRequest("MICRO", "gateway/Workforce/GetSubscriberUserAttendance", {
+      method: "POST",
+      body: {
+        Data: {
+          StartDate: start.toISOString(),
+          EndDate: end.toISOString(),
+          UserIds: [],
+          TeamIds: teamIds,
+          MemberIds: memberIds,
+          FullTextSearch: "",
+        },
+        PageNumber: 0,
+        PageSize: 200,
+        SortColumn: "",
+        SortOrder: true,
+      },
+      timeoutMs: 30000,
+    });
+    const data = asRows(envelope.Data ?? envelope.value ?? envelope.Value);
+    const users = data.flatMap((row) => asRows(row.Users));
+    return users.length > 0 ? users : data;
+  } catch {
+    return [];
+  }
+}
+
 export interface RouteHistory {
   pins: Record<string, unknown>[];
   paths: Array<{ points: Array<{ lat: number; lng: number }>; dotted?: boolean }>;

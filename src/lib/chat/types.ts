@@ -12,7 +12,7 @@ export type ReportEntityKey =
   | "company"
   | "contact";
 
-export type WorkforceTopic = "team" | "location" | "route" | "started";
+export type WorkforceTopic = "team" | "location" | "route" | "started" | "joined";
 export type PartyTopic = "list" | "profile" | "search";
 export type QuoteTopic = "list" | "view";
 
