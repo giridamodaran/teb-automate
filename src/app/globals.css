@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+:root {
+  --teb-navy: #111827;
+  --teb-blue: #086fb8;
+  --teb-blue-dark: #065a96;
+  --teb-surface: #f4f7fb;
+  --teb-border: #dfe7ef;
+  --teb-text: #0f172a;
+  --teb-muted: #64748b;
+}
+
+html,
+body {
+  min-height: 100%;
+  min-height: 100dvh;
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  color: var(--teb-text);
+  background: var(--teb-surface);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+  -webkit-font-smoothing: antialiased;
+}
