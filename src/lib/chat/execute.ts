@@ -12,14 +12,14 @@ import {
   searchCatalogFacet,
   searchCatalogItems,
 } from "@/lib/api/filters";
-import { listLocations, listOwners, listQuoteTypes, listCurrencies, ownerFromUser, getSubscriberUserCurrency, searchCompanies, searchContacts, type LookupOption } from "@/lib/api/quote-lookups";
+import { listLocations, listOwners, listQuoteTypes, listCurrencies, ownerFromUser, getSubscriberUserCurrency, searchCompanies, searchContacts, matchPeople, pickPerson, type LookupOption } from "@/lib/api/quote-lookups";
 import type { TebUserDetail } from "@/lib/api/types";
 import { aliasFamily, matchTab, tabPhrases } from "@/lib/chat/filter-fields";
 import { REPORT_ENTITIES, type ReportEntity } from "@/lib/chat/entities";
 import { HELP_TEXT, isDashboardQuestion, isGreeting, parseQuestion } from "@/lib/chat/parse";
 import type { ChatHistoryTurn } from "@/lib/chat/journey";
-import { dateWindow, modeLabel, periodProperty, toLiveDateFilter } from "@/lib/chat/date-filter";
-import { buildDatasetSummary, localAnalysis, pickCharts, rowDate, rowOwner, rowStatus, rowTitle } from "@/lib/chat/charts";
+import { dateWindow, inDateWindow, modeLabel, periodProperty, toLiveDateFilter } from "@/lib/chat/date-filter";
+import { buildDatasetSummary, localAnalysis, pickCharts, rowDate, rowStatus, rowTitle } from "@/lib/chat/charts";
 import type {
   FilterScreen,
   FilterTab,
@@ -34,7 +34,7 @@ import { userFacingAskError } from "@/lib/chat/user-copy";
 import { runWorkforceReport } from "@/lib/chat/workforce-report";
 import { runPartyReport } from "@/lib/chat/party-report";
 import { runQuoteView } from "@/lib/chat/quote-report";
-import { toQuoteCard } from "@/lib/api/quote-view";
+import { fillQuoteListAmounts, toQuoteCard } from "@/lib/api/quote-view";
 import {
   DASHBOARD_COLUMNS,
   DASHBOARD_SUGGESTIONS,
@@ -85,6 +85,10 @@ function pickBest(matches: LookupOption[], needle: string): LookupOption | null 
     matches.find((option) => normalize(option.label) === want) ??
     [...matches].sort((a, b) => a.label.length - b.label.length)[0]
   );
+}
+
+function personFields(row: Record<string, unknown>): string[] {
+  return ["OwnerName", "Owner", "CreatedBy", "CreatedByName", "ModifiedBy"].map((key) => String(row[key] ?? ""));
 }
 
 function tabCode(tab: FilterTab): string {
@@ -561,11 +565,14 @@ function chipsFor(intent: ReportIntent, extra: string[]): string[] {
   if (intent.partyTopic && intent.partyTopic !== "list") chips.push(intent.partyTopic);
   if (intent.quoteTopic === "view") chips.push("view");
   if (intent.personName) chips.push(intent.personName);
-  if (intent.ownerMe) chips.push("owned by me");
-  if (intent.ownerName) chips.push(`owner ${intent.ownerName}`);
+  if (intent.ownerMe) chips.push(/\bcreated by me\b/i.test(intent.raw) ? "created by me" : "owned by me");
+  if (intent.ownerName) {
+    chips.push(/\bcreated by\b/i.test(intent.raw) ? `created by ${intent.ownerName}` : `owner ${intent.ownerName}`);
+  }
   if (intent.assigneeMe) chips.push("assigned to me");
   if (intent.assigneeName) chips.push(`assignee ${intent.assigneeName}`);
   for (const row of intent.criteria) {
+    if (/^(owner|assignee)$/.test(aliasFamily(row.key))) continue;
     if (row.me) chips.push(`${row.key} me`);
     else if (row.values.length) chips.push(`${row.key} ${row.values.join(", ")}`);
   }
@@ -679,6 +686,7 @@ function refineRows(
   rows: Record<string, unknown>[],
   intent: ReportIntent,
   ownerIds: string[],
+  ownerLabels: string[],
   meLabel: string,
 ): Record<string, unknown>[] {
   let next = rows;
@@ -697,15 +705,18 @@ function refineRows(
     next = next.filter((row) => {
       const date = rowDate(row, field) || rowDate(row, "created") || rowDate(row, "updated");
       if (!date) return false;
-      return date >= window.from && date <= window.to;
+      return inDateWindow(date, window);
     });
   }
-  if (ownerIds.length > 0 || (intent.ownerMe && meLabel)) {
+  const labels = [...ownerLabels, intent.ownerMe ? meLabel : "", intent.ownerName || ""]
+    .map((value) => normalize(value))
+    .filter(Boolean);
+  if (ownerIds.length > 0 || labels.length > 0) {
     next = next.filter((row) => {
       const ownerId = String(row.OwnerId ?? row.ownerid ?? "");
       if (ownerId && ownerIds.includes(ownerId)) return true;
-      if (meLabel && normalize(rowOwner(row)).includes(normalize(meLabel))) return true;
-      return false;
+      const people = personFields(row).map((value) => normalize(value)).filter(Boolean);
+      return labels.some((label) => people.some((name) => name === label || name.includes(label) || label.includes(name)));
     });
   }
   if (intent.stageNames.length > 0) {
@@ -812,7 +823,7 @@ export async function runReportQuestion(
               : "Team snapshot returned no module counts.",
             analysis: snapshot.rows
               .slice(0, 12)
-              .map((row) => `${row.Title}: ${Number(row.Count ?? 0).toLocaleString()}`)
+              .map((row) => `${row.Title}: **${Number(row.Count ?? 0).toLocaleString()}**`)
               .join("\n"),
             chips: chipsFor(intent, people.extraChips),
             total: snapshot.total,
@@ -931,6 +942,7 @@ export async function runReportQuestion(
       Boolean(intent.locationName));
 
   const ownerIds: string[] = [];
+  const ownerLabels: string[] = [];
   const assigneeIds: string[] = [];
   const locationIds: string[] = [];
   const statusIds: string[] = [];
@@ -954,13 +966,20 @@ export async function runReportQuestion(
       intent.criteria.some((row) => /^(status|workflow)$/.test(aliasFamily(row.key))) ||
       intent.stageNames.length > 0 ||
       Boolean(intent.workflowName);
-    const [owners, listedWorkflows, stageTree] = await Promise.all([
+    const [ownersFromList, listedWorkflows, stageTree] = await Promise.all([
       peopleNeeded ? listOwners() : Promise.resolve([]),
       stageNeeded ? listWorkflowsForModule(entity.workflowModules) : Promise.resolve([]),
       stageNeeded
         ? loadWorkflowStageTree([entity.listModule, entity.dynamicModule, ...entity.workflowModules])
         : Promise.resolve({ workflows: [] as LookupOption[], stages: [] as Array<LookupOption & { workflowId: string }> }),
     ]);
+    const ownerTab = tabs.find(isOwnerTab);
+    const ownersFromTab =
+      peopleNeeded && ownerTab ? await loadTabOptions(screen, ownerTab, entity).catch(() => [] as LookupOption[]) : [];
+    const owners = [
+      ...ownersFromTab,
+      ...ownersFromList.filter((option) => !ownersFromTab.some((row) => row.id === option.id)),
+    ];
     const workflowOptions =
       listedWorkflows.length > 0
         ? listedWorkflows
@@ -969,13 +988,20 @@ export async function runReportQuestion(
           : listedWorkflows;
     const treeStages = stageTree.stages;
 
-    async function resolveNames(kind: string, names: string[], options: LookupOption[]): Promise<string[] | ReportResult> {
+    async function resolvePeople(
+      kind: string,
+      names: string[],
+      options: LookupOption[],
+      asOwner = false,
+    ): Promise<string[] | ReportResult> {
       const ids: string[] = [];
+      const pool = options.length > 0 ? options : ownersFromList;
       for (const name of names) {
-        const picked = pickBest(matchLookups(options, name), name);
-        if (!picked) return missingName(kind, name, options);
+        const picked = pickPerson(matchPeople(pool, name), name);
+        if (!picked) return missingName(kind, name, pool);
         ids.push(picked.id);
         extraChips.push(picked.label);
+        if (asOwner) ownerLabels.push(picked.label);
       }
       return ids;
     }
@@ -985,7 +1011,7 @@ export async function runReportQuestion(
       if (family === "owner") {
         if (row.me && me) ownerIds.push(me.id);
         if (row.values.length > 0) {
-          const ids = await resolveNames("owner", row.values, owners);
+          const ids = await resolvePeople("owner", row.values, owners, true);
           if (!Array.isArray(ids)) return { intent, result: ids };
           ownerIds.push(...ids);
         }
@@ -994,7 +1020,7 @@ export async function runReportQuestion(
       if (family === "assignee") {
         if (row.me && me) assigneeIds.push(me.id);
         if (row.values.length > 0) {
-          const ids = await resolveNames("assignee", row.values, owners);
+          const ids = await resolvePeople("assignee", row.values, owners);
           if (!Array.isArray(ids)) return { intent, result: ids };
           assigneeIds.push(...ids);
         }
@@ -1105,6 +1131,7 @@ export async function runReportQuestion(
     }
 
     if (intent.ownerMe && me && !ownerIds.includes(me.id)) ownerIds.push(me.id);
+    if (intent.ownerMe && me?.label) ownerLabels.push(me.label);
     if (intent.assigneeMe && me && !assigneeIds.includes(me.id)) assigneeIds.push(me.id);
 
     filterValues = ensureDateFilter(
@@ -1265,7 +1292,7 @@ export async function runReportQuestion(
   const meLabel = me?.label || "";
   const snapshot = intent.stack === "dashboard" && looksLikeSnapshot(rows);
   if (!snapshot) {
-    const refined = refineRows(rows, intent, ownerIds, meLabel);
+    const refined = refineRows(rows, intent, ownerIds, ownerLabels, meLabel);
     if (refined.length !== rows.length) {
       rows = refined;
       total = refined.length;
@@ -1286,12 +1313,15 @@ export async function runReportQuestion(
     });
     const loaded = await loadReportingRows(entity.reportingMethod, reporting, intent.pageSize);
     if (loaded && (loaded.rows.length > 0 || loaded.total > 0)) {
-      rows = loaded.rows;
-      total = loaded.total;
+      rows = snapshot ? loaded.rows : refineRows(loaded.rows, intent, ownerIds, ownerLabels, meLabel);
+      total = rows.length;
     }
   }
 
   const preferredCurrency = await loadMappedCurrency();
+  if (entity.key === "quote" && rows.length > 0) {
+    rows = await fillQuoteListAmounts(rows);
+  }
   const summary = buildDatasetSummary(rows, total, intent.metric, preferredCurrency, entity.key === "receipt");
   const charts = snapshot ? dashboardCharts(rows) : pickCharts(intent, summary);
   const analysis =
@@ -1299,7 +1329,7 @@ export async function runReportQuestion(
       ? snapshot
         ? rows
             .slice(0, 12)
-            .map((row) => `${row.Title}: ${Number(row.Count ?? 0).toLocaleString()}`)
+            .map((row) => `${row.Title}: **${Number(row.Count ?? 0).toLocaleString()}**`)
             .join("\n")
         : await genAiAnalysis(intent.raw, summary, history)
       : intent.stack === "dashboard"

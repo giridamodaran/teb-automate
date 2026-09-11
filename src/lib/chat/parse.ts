@@ -140,12 +140,28 @@ function captureName(match: string | undefined): string | undefined {
 }
 
 function parseOwner(text: string): Pick<ReportIntent, "ownerMe" | "ownerName"> & { ownerNames: string[] } {
-  if (/\b(owned by me|i own|my own|mine)\b/i.test(text) || /\bmy\s+(quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?|workforce|companies|contacts?|accounts?)\b/i.test(text)) {
+  if (
+    /\b(owned by me|created by me|i own|my own|mine)\b/i.test(text) ||
+    /\bmy\s+(quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?|workforce|companies|contacts?|accounts?)\b/i.test(text)
+  ) {
     return { ownerMe: true, ownerNames: [] };
   }
-  const owned = text.match(/\b(?:owned by|owner(?: is| are)?)\s+([a-z][a-z ,.'-]{1,80})/i);
+  const stop =
+    /\s+(?:and\s+)?(?:where|status|stage|workflow|last|this|today|yesterday|created|updated|owned|assigned|with)\b|[?.!]*$/i;
+  const owned = text.match(
+    new RegExp(String.raw`\b(?:created by|owned by|owner(?: is| are)?)\s+([a-z][a-z ,.'-]{1,80}?)(?=${stop.source})`, "i"),
+  );
+  const byEntity = text.match(
+    new RegExp(
+      String.raw`\b(?:quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?|companies|contacts?)\s+by\s+(?!value|owner|status|stage|month|week|day|item)([a-z][a-z ,.'-]{1,80}?)(?=${stop.source})`,
+      "i",
+    ),
+  );
   const possessive = text.match(/\b([a-z][a-z .'-]{1,30})'s\s+(?:quotes?|leads?|orders?|opportunit(?:y|ies)|invoices?|tickets?|work\s*orders?|receipts?|actions?|companies|contacts?)\b/i);
-  const names = splitFilterValues(owned?.[1] || "") || [];
+  const names = [
+    ...splitFilterValues(owned?.[1] || ""),
+    ...splitFilterValues(byEntity?.[1] || ""),
+  ];
   const one = captureName(possessive?.[1]);
   if (one && !names.includes(one)) names.push(one);
   return { ownerMe: false, ownerName: names[0], ownerNames: names };
@@ -170,7 +186,12 @@ function parseSearch(text: string): string | undefined {
   if (forValue) {
     forValue = forValue.replace(/\s+(this|last|today|yesterday|in|owned|assigned)\b.*$/i, "").trim();
   }
-  if (forValue && /^(me|this month|last month|today|item|items|sku|skus|product|products|asset|assets)$/i.test(forValue)) {
+  if (
+    forValue &&
+    (/^(me|this month|last month|today|yesterday|item|items|sku|skus|product|products|asset|assets)$/i.test(forValue) ||
+      parseDate(forValue) ||
+      /^(last|this|past|next)\s+/i.test(forValue))
+  ) {
     return undefined;
   }
   if (forValue) return forValue;
@@ -406,7 +427,7 @@ export function isGreeting(text: string): boolean {
 }
 
 export const HELP_TEXT =
-  "Ask in plain language about Companies, Contacts, Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, Workforce, or the Management Dashboard.\n\nYou can mention owner, assignee, workflow status or stage, dates, and items. Examples:\n• Companies created last 7 days\n• Company profile for Acme\n• View quote Q-1024\n• Quotes in Follow Up\n• Work orders in Assign to Engineer\n• Team snapshot this month\n• How many people started today\n• Find my team";
+  "Ask in plain language about Companies, Contacts, Quotes, Leads, Opportunities, Orders, Invoices, Receipts, Service Tickets, Work Orders, Actions, Workforce, or the Management Dashboard.\n\nYou can mention owner, created by, assignee, workflow status or stage, dates, and items. Examples:\n• Leads created by Priya\n• Companies created last 7 days\n• Company profile for Acme\n• View quote Q-1024\n• Quotes in Follow Up\n• Work orders in Assign to Engineer\n• Team snapshot this month\n• How many people started today\n• Find my team";
 
 export function parseQuestion(
   text: string,

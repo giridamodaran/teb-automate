@@ -1,5 +1,5 @@
 import { postReporting } from "@/lib/api/filters";
-import { ownerFromUser, listOwners } from "@/lib/api/quote-lookups";
+import { ownerFromUser, listOwners, matchPeople, pickPerson } from "@/lib/api/quote-lookups";
 import type { TebUserDetail } from "@/lib/api/types";
 import type { ReportEntity } from "@/lib/chat/entities";
 import type {
@@ -290,20 +290,14 @@ export async function resolveDashboardOwners(
   if (intent.assigneeMe && me) assigneeIds.push(me.id);
   if (names.length === 0 && assigneeNames.length === 0) return { ownerIds, assigneeIds, extraChips };
   const owners = await listOwners();
-  const want = (needle: string) => {
-    const exact = owners.filter((row) => row.label.toLowerCase() === needle.toLowerCase() || row.id === needle);
-    if (exact.length === 1) return exact[0];
-    const contains = owners.filter((row) => row.label.toLowerCase().includes(needle.toLowerCase()));
-    return contains[0] ?? exact[0] ?? null;
-  };
   for (const name of names) {
-    const picked = want(name);
+    const picked = pickPerson(matchPeople(owners, name), name);
     if (!picked) return { error: name, options: owners.slice(0, 8).map((row) => row.label) };
     ownerIds.push(picked.id);
     extraChips.push(picked.label);
   }
   for (const name of assigneeNames) {
-    const picked = want(name);
+    const picked = pickPerson(matchPeople(owners, name), name);
     if (!picked) return { error: name, options: owners.slice(0, 8).map((row) => row.label) };
     assigneeIds.push(picked.id);
     extraChips.push(picked.label);

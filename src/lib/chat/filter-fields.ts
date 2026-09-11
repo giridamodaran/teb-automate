@@ -2,7 +2,7 @@ import type { FilterCriterion, FilterTab } from "@/lib/chat/types";
 
 /** Spoken names → live GetFilterControls Tab.Code / Title tokens. Same map works for other apps. */
 export const FILTER_ALIASES: Record<string, string[]> = {
-  owner: ["owner", "owners", "owned by", "ownedby"],
+  owner: ["owner", "owners", "owned by", "ownedby", "created by", "createdby", "creator"],
   assignee: ["assignee", "assignees", "assigned to", "assignedto", "assign"],
   status: ["status", "stage", "stages"],
   workflow: ["workflow", "pipeline"],

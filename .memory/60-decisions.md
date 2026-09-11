@@ -1,5 +1,13 @@
 # Decisions
 
+## 2026-09-11 — Last N days includes today; analysis uses quote current value
+
+Ask “last N days” is a local calendar BETWEEN from today-(N-1) through today (YYYY-MM-DD), not UTC-sliced ISO and not WITHIN (which can omit today). Local refine compares calendar days. Quote list `QuoteValue` is often 0; analysis skips zeros and uses `QuoteCurrentValue` / `QuoteNetValue` (and GETQUOTEDETAIL when the list has no amount). Analysis wraps counts and money in `** **` for bold.
+
+## 2026-09-11 — “Leads created by {user}” uses the live Owner lookup
+
+Ask did not parse `created by` as a person filter, so it listed every lead. Live Lead manage has OWNER (`GetSubscriberActiveUsers` `Text`) and a `CreatedBy` column, not a separate Created-By tab. Map `created by {name}` / `created by me` to OWNER + row `CreatedBy` / `OwnerName`. Resolve people from the live owner dropdown, not session `UserName` only.
+
 ## 2026-09-11 — Workforce Ask shows names and street addresses, not UserIds or 0/lat-long
 
 `GetUserLastLocation` / `GetSignedInUsersLastLocation` often have `Address: null` (or numeric `0`) with only Latitude/Longitude. The same-day tracking APIs already return the address: `CurrentDateUserTrackingInfo.CurrentAddress` / `StartAddress`, Day Manage `StartAddress`, and `GetUserTrackingListView` start/end `Address`. Ask must merge those fields and never display `0`, a 24-char UserId, or a coordinate pair as the person or place. Route maps use start/end pins plus the path, not MarkerList `Id` as the pin title.
@@ -14,7 +22,7 @@ Ask maps `how many people started today` / `members present` / `no of people hav
 
 ## 2026-09-11 — Quote view in Ask is read-only plus an Open-in-TEB link
 
-Do not rebuild the Quote composer in this clone. Ask quote view uses live read APIs only: Dynamic `GETQUOTEDETAIL` / `VIEWCONSUMEDITEM` / `GETQUOTEACTIVITY` (EstimationManagement), MICRO `getsubscribertemplatedropdown` (unwrapped `{ Module: TEBQuote }`) and `GetSubscriberNotes` (wrapped `{ data: { EntityId, Module: TEBQuote } }`). Open the record in the live Angular app at `https://live.teb.cloud/sales/quote/view/{id}`. Do not post `CHANGEQUOTESTATUS` or item writes from Ask.
+Do not rebuild the Quote composer in this clone. Ask quote view uses live read APIs only: Dynamic `GETQUOTEDETAIL` / `VIEWCONSUMEDITEM` / `GETQUOTEACTIVITY` (EstimationManagement), MICRO `getsubscribertemplatedropdown` (unwrapped `{ Module: TEBQuote }`) and `GetSubscriberNotes` (wrapped `{ data: { EntityId, Module: TEBQuote } }`). Open the record in the live Angular app at `https://live.teb.cloud/sales/quote/view/{id}`. Do not post `CHANGEQUOTESTATUS` or item writes from Ask. Hide the empty trailing line the composer API appends to `ItemDetail` (no product/SKU, amount 0, label “Item”); do not show it on the receipt.
 
 ## 2026-09-11 — Company and Contact in Ask use GetCustomerDetail, not Quote MANAGE
 

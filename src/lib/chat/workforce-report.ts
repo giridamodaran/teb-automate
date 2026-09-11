@@ -21,7 +21,7 @@ import {
   startedDate,
   type WorkforceSnapshotStage,
 } from "@/lib/api/workforce";
-import { dateWindow, startOfDay } from "@/lib/chat/date-filter";
+import { dateWindow, inDateWindow, startOfDay } from "@/lib/chat/date-filter";
 import { formatFriendlyDate } from "@/lib/format-date";
 import { REPORT_ENTITIES } from "@/lib/chat/entities";
 import { buildDatasetSummary, pickCharts } from "@/lib/chat/charts";
@@ -136,7 +136,7 @@ function matchPerson(options: LookupOption[], needle: string): LookupOption | nu
 function inWindow(raw: string, from: Date, to: Date): boolean {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return false;
-  return date >= from && date <= to;
+  return inDateWindow(date, { from, to });
 }
 
 function pinsFromRows(rows: Record<string, unknown>[]): MapPin[] {

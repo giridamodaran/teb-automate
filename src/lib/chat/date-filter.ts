@@ -22,6 +22,30 @@ export function addDays(date: Date, days: number): Date {
   return next;
 }
 
+/** Local calendar YYYY-MM-DD — never UTC-sliced ISO, which shifts the day in IST. */
+export function localYmd(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function fromLocalYmd(value: string): Date | null {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function asWindowDate(value: string, end: boolean): Date | null {
+  const trimmed = value.trim();
+  const ymd = fromLocalYmd(trimmed);
+  if (ymd) return end ? endOfDay(ymd) : startOfDay(ymd);
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return end ? endOfDay(parsed) : startOfDay(parsed);
+}
+
 export function periodProperty(fieldType: string): string {
   switch (fieldType) {
     case "UPDATEDFILTER":
@@ -41,7 +65,9 @@ export function periodProperty(fieldType: string): string {
 export function dateWindow(intent: DateRangeIntent, now = new Date()): { from: Date; to: Date } | null {
   if (intent.mode === "ANY") return null;
   if (intent.from && intent.to) {
-    return { from: new Date(intent.from), to: new Date(intent.to) };
+    const from = asWindowDate(intent.from, false);
+    const to = asWindowDate(intent.to, true);
+    if (from && to) return { from, to };
   }
   if (intent.mode === "WITHIN" && intent.period && intent.period > 0) {
     const to = endOfDay(now);
@@ -54,9 +80,18 @@ export function dateWindow(intent: DateRangeIntent, now = new Date()): { from: D
   return null;
 }
 
+export function inDateWindow(date: Date, window: { from: Date; to: Date }): boolean {
+  const day = localYmd(date);
+  return day >= localYmd(window.from) && day <= localYmd(window.to);
+}
+
 function asApiDate(value?: string | null): string | null {
   if (!value) return null;
-  return value.length >= 10 ? value.slice(0, 10) : value;
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) return localYmd(parsed);
+  return trimmed.length >= 10 ? trimmed.slice(0, 10) : trimmed;
 }
 
 /** Live Created Filter body: Mode ANY | WITHIN | BETWEEN | FINANCIALPERIOD. Period must be an int — null 400s. */
@@ -84,14 +119,16 @@ export function toLiveDateFilter(intent: DateRangeIntent): LiveDateFilter {
 
 export function withinDays(fieldType: DateFieldType, days: number, label: string): DateRangeIntent {
   const now = new Date();
+  const from = startOfDay(addDays(now, -(days - 1)));
+  const to = startOfDay(now);
   return {
     fieldType,
-    mode: "WITHIN",
+    mode: "BETWEEN",
     period: days,
     periodType: "FILTERDAYS",
     anyUpdatePeriodType: "LAST",
-    from: toIso(startOfDay(addDays(now, -(days - 1)))),
-    to: toIso(endOfDay(now)),
+    from: localYmd(from),
+    to: localYmd(to),
     label,
   };
 }
@@ -110,8 +147,8 @@ export function withinPeriod(
     period,
     periodType,
     anyUpdatePeriodType: "LAST",
-    from: window ? toIso(window.from) : undefined,
-    to: window ? toIso(window.to) : undefined,
+    from: window ? localYmd(window.from) : undefined,
+    to: window ? localYmd(window.to) : undefined,
     label,
   };
 }
@@ -120,8 +157,8 @@ export function betweenRange(fieldType: DateFieldType, from: Date, to: Date, lab
   return {
     fieldType,
     mode: "BETWEEN",
-    from: toIso(startOfDay(from)),
-    to: toIso(endOfDay(to)),
+    from: localYmd(from),
+    to: localYmd(to),
     label,
   };
 }
@@ -150,8 +187,13 @@ export const DATE_FIELD_LABEL: Record<DateFieldType, string> = {
 
 export function modeLabel(intent: DateRangeIntent): string {
   const field = DATE_FIELD_LABEL[intent.fieldType];
-  if (intent.mode === "WITHIN") return `${field} within last ${intent.period} ${intent.periodType === "FILTERMONTHS" ? "months" : intent.periodType === "FILTERYEARS" ? "years" : "days"}`;
+  if (intent.mode === "WITHIN") {
+    return `${field} within last ${intent.period} ${intent.periodType === "FILTERMONTHS" ? "months" : intent.periodType === "FILTERYEARS" ? "years" : "days"}`;
+  }
   if (intent.mode === "ANY") return `${field} any`;
   if (intent.mode === "FINANCIALPERIOD") return `${field} financial period`;
+  if (/^(last|this|today|yesterday|past)\b/i.test(intent.label) || intent.label.includes("–")) {
+    return `${field} ${intent.label}`;
+  }
   return `${field} between ${intent.label}`;
 }

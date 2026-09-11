@@ -1,6 +1,6 @@
 import type { ChartSeries, DatasetSummary, ReportIntent } from "@/lib/chat/types";
 import { formatAmount, mappedCurrency } from "@/lib/money";
-import { formatFriendlyDate } from "@/lib/format-date";
+import { formatFriendlyDate, parseApiDate } from "@/lib/format-date";
 
 function firstString(row: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
@@ -81,18 +81,45 @@ export function rowDate(
             : ["CreatedDate", "StartDate", "DateOfJoining", "JoiningDate", "createddate"];
   const raw = firstString(row, keys);
   if (!raw) return null;
-  const date = new Date(raw);
-  return Number.isNaN(date.getTime()) ? null : date;
+  return parseApiDate(raw);
+}
+
+function numericAmount(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    for (const nested of [
+      "QuoteCurrentValue",
+      "QuoteNetValue",
+      "QuoteValue",
+      "TotalAmount",
+      "GrandTotal",
+      "NetAmount",
+      "Amount",
+      "Value",
+      "Total",
+    ]) {
+      const numeric = Number(obj[nested]);
+      if (Number.isFinite(numeric) && numeric !== 0) return numeric;
+    }
+    return null;
+  }
+  const numeric = typeof raw === "number" ? raw : Number(String(raw).replace(/,/g, ""));
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 export function rowAmount(row: Record<string, unknown>, preferReceived = false): number {
   const keys = [
     ...(preferReceived ? ["AmountReceived", "ReceivedAmount", "PaidAmount"] : []),
+    "QuoteCurrentValue",
+    "QuoteNetValue",
+    "QuoteValue",
+    "InvoiceValue",
+    "OrderValue",
     "TotalAmount",
     "GrandTotal",
     "NetAmount",
     "QuoteTotal",
-    "QuoteValue",
     "Total",
     "Amount",
     "Value",
@@ -101,21 +128,15 @@ export function rowAmount(row: Record<string, unknown>, preferReceived = false):
     "netamount",
     ...(!preferReceived ? ["AmountReceived", "ReceivedAmount", "PaidAmount"] : []),
   ];
+  let zero = 0;
   for (const key of keys) {
     const raw = row[key] ?? Object.entries(row).find(([entry]) => entry.toLowerCase() === key.toLowerCase())?.[1];
-    if (raw == null || raw === "") continue;
-    if (typeof raw === "object") {
-      const obj = raw as Record<string, unknown>;
-      for (const nested of ["TotalAmount", "GrandTotal", "NetAmount", "Amount", "Value", "Total"]) {
-        const numeric = Number(obj[nested]);
-        if (Number.isFinite(numeric)) return numeric;
-      }
-      continue;
-    }
-    const numeric = typeof raw === "number" ? raw : Number(String(raw).replace(/,/g, ""));
-    if (Number.isFinite(numeric)) return numeric;
+    const numeric = numericAmount(raw);
+    if (numeric == null) continue;
+    if (numeric !== 0) return numeric;
+    zero = 0;
   }
-  return 0;
+  return zero;
 }
 
 function topSums(
@@ -243,35 +264,36 @@ export function pickCharts(intent: ReportIntent, summary: DatasetSummary): Chart
 }
 
 export function localAnalysis(question: string, summary: DatasetSummary): string {
-  const money = (n: number) => formatAmount(n, summary.currencySymbol);
+  const money = (n: number) => `**${formatAmount(n, summary.currencySymbol)}**`;
+  const count = (n: number) => `**${n.toLocaleString()}**`;
   const topStatus = summary.byStatus[0];
   const topOwner = summary.byOwner[0];
   const lines: string[] = [];
   if (summary.metric === "value") {
-    lines.push(`Total value: ${money(summary.amount)} across ${summary.shown} records.`);
+    lines.push(`Total value: ${money(summary.amount)} across ${count(summary.shown)} records.`);
   } else {
-    lines.push(`Showing ${summary.shown} of ${summary.total} records.`);
+    lines.push(`Showing ${count(summary.shown)} of ${count(summary.total)} records.`);
     if (summary.amount > 0) lines.push(`Value in these records: ${money(summary.amount)}.`);
   }
   if (topStatus) {
     lines.push(
       summary.metric === "value"
         ? `Largest value bucket is ${topStatus.label} (${money(topStatus.value)}).`
-        : `Largest status bucket is ${topStatus.label} (${topStatus.value}).`,
+        : `Largest status bucket is ${topStatus.label} (${count(topStatus.value)}).`,
     );
   }
   if (topOwner) {
     lines.push(
       summary.metric === "value"
         ? `Highest value owner is ${topOwner.label} (${money(topOwner.value)}).`
-        : `Most records sit with ${topOwner.label} (${topOwner.value}).`,
+        : `Most records sit with ${topOwner.label} (${count(topOwner.value)}).`,
     );
   }
   if (summary.byMonth.length >= 2) {
     const first = summary.byMonth[0];
     const last = summary.byMonth[summary.byMonth.length - 1];
-    const firstText = summary.metric === "value" ? money(first.value) : first.value.toLocaleString();
-    const lastText = summary.metric === "value" ? money(last.value) : last.value.toLocaleString();
+    const firstText = summary.metric === "value" ? money(first.value) : count(first.value);
+    const lastText = summary.metric === "value" ? money(last.value) : count(last.value);
     lines.push(`Moved from ${firstText} in ${first.label} to ${lastText} in ${last.label}.`);
   }
   lines.push(`Question: ${question}`);

@@ -213,6 +213,23 @@ function QuoteCardView({
 }
 
 
+function AnalysisText({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <div className="whitespace-pre-wrap">
+      {parts.map((part, index) =>
+        part.startsWith("**") && part.endsWith("**") && part.length > 4 ? (
+          <strong key={index} className="font-semibold text-slate-900">
+            {part.slice(2, -2)}
+          </strong>
+        ) : (
+          <span key={index}>{part}</span>
+        ),
+      )}
+    </div>
+  );
+}
+
 function ReportBlock({
   result,
   busy,
@@ -249,7 +266,14 @@ function ReportBlock({
           </span>
         </p>
       ) : result.total > 0 ? (
-        <p className="text-lg font-semibold tabular-nums text-slate-900">{result.total.toLocaleString()}</p>
+        <p className="text-lg font-semibold tabular-nums text-slate-900">
+          {result.total.toLocaleString()}
+          {result.amount > 0 ? (
+            <span className="ml-2 text-sm font-semibold tabular-nums text-[#086fb8]">
+              {formatAmount(result.amount, result.currencySymbol)}
+            </span>
+          ) : null}
+        </p>
       ) : null}
       {result.quoteView ? (
         <QuoteViewBlock view={result.quoteView} />
@@ -276,7 +300,7 @@ function ReportBlock({
       {result.analysis ? (
         <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2 text-[12px] leading-5 text-slate-700">
           <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Analysis</p>
-          <div className="whitespace-pre-wrap">{result.analysis}</div>
+          <AnalysisText text={result.analysis} />
         </div>
       ) : null}
     </div>

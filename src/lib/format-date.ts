@@ -21,6 +21,15 @@ function parseStoredDate(text: string): { date: Date; hasTime: boolean } | null 
   return Number.isNaN(date.getTime()) ? null : { date, hasTime: true };
 }
 
+export function parseApiDate(raw: unknown): Date | null {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  const parsed = parseStoredDate(text);
+  if (parsed) return parsed.date;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export function formatFriendlyDate(raw: unknown): string {
   const text = String(raw ?? "").trim();
   if (!text) return "";

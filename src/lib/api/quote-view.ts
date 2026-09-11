@@ -161,11 +161,54 @@ export function isQuoteId(value: string): boolean {
   return GUID.test(value.trim());
 }
 
+function firstPositiveAmount(...values: unknown[]): number | null {
+  let zero: number | null = null;
+  for (const value of values) {
+    const n = asNumber(value);
+    if (n == null) continue;
+    if (n !== 0) return n;
+    zero = 0;
+  }
+  return zero;
+}
+
+export async function fillQuoteListAmounts(rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  const missing = rows.filter(
+    (row) =>
+      (firstPositiveAmount(row.QuoteCurrentValue, row.QuoteNetValue, row.QuoteValue, row.NetAmount, row.TotalAmount) ?? 0) === 0,
+  );
+  if (missing.length === 0) return rows;
+  const details = await Promise.all(
+    missing.slice(0, 25).map((row) => {
+      const id = firstText(row, ["Id", "QuoteId", "id"]);
+      return id ? getQuoteDetail(id).catch(() => null) : Promise.resolve(null);
+    }),
+  );
+  const byId = new Map<string, Record<string, unknown>>();
+  missing.slice(0, 25).forEach((row, index) => {
+    const id = firstText(row, ["Id", "QuoteId", "id"]);
+    const detail = details[index];
+    if (id && detail) byId.set(id, detail);
+  });
+  if (byId.size === 0) return rows;
+  return rows.map((row) => {
+    const id = firstText(row, ["Id", "QuoteId", "id"]);
+    const detail = id ? byId.get(id) : undefined;
+    if (!detail) return row;
+    return {
+      ...row,
+      QuoteCurrentValue: detail.QuoteCurrentValue ?? row.QuoteCurrentValue,
+      QuoteNetValue: detail.QuoteNetValue ?? row.QuoteNetValue,
+      QuoteValue: detail.QuoteValue ?? row.QuoteValue,
+    };
+  });
+}
+
 export function toQuoteCard(row: Record<string, unknown>, preferredCurrency?: Record<string, unknown> | null): QuoteCard | null {
   const id = firstText(row, ["Id", "QuoteId", "id"]);
   if (!id) return null;
   const currency = mappedCurrency(row, preferredCurrency);
-  const amount = asNumber(row.QuoteCurrentValue ?? row.QuoteNetValue ?? row.QuoteValue ?? row.NetAmount ?? row.TotalAmount);
+  const amount = firstPositiveAmount(row.QuoteCurrentValue, row.QuoteNetValue, row.QuoteValue, row.NetAmount, row.TotalAmount);
   return {
     id,
     title: firstText(row, ["Title", "QuoteTitle", "Name"]) || "Untitled quote",
@@ -359,26 +402,46 @@ function itemNamesFrom(row: Record<string, unknown>): string[] {
   return text ? [text] : [];
 }
 
+function isGenericItemName(name: string): boolean {
+  return /^items?$/i.test(name.trim());
+}
+
+function isPlaceholderItem(row: Record<string, unknown>): boolean {
+  const nested = asRecord(row.ItemPriceScheme) || asRecord(row.Item) || {};
+  const name =
+    firstText(row, ["ItemName", "ProductName", "Name", "Description", "Title"]) || firstText(nested, ["ItemName", "Name"]);
+  const sku = firstText(row, ["SKU", "ItemStandardCode", "ItemCode"]) || firstText(nested, ["SKU", "ItemCode"]);
+  if (name && !isGenericItemName(name)) return false;
+  if (sku) return false;
+  const amount =
+    asNumber(row.NetAmount ?? row.TotalAmountWithTax ?? row.TotalAmount ?? row.UnitPrice ?? nested.NetAmount) ?? 0;
+  return amount === 0;
+}
+
 function toItems(rows: Record<string, unknown>[], symbol: string): QuoteViewItem[] {
-  return rows.map((row, index) => {
-    const nested = asRecord(row.ItemPriceScheme) || asRecord(row.Item) || {};
-    return {
-      id: firstText(row, ["Id", "ItemId"]) || `item-${index}`,
-      name:
-        firstText(row, ["ItemName", "ProductName", "Name", "Title", "Description"]) ||
+  return rows
+    .filter((row) => !isPlaceholderItem(row))
+    .map((row, index) => {
+      const nested = asRecord(row.ItemPriceScheme) || asRecord(row.Item) || {};
+      const name =
+        firstText(row, ["ItemName", "ProductName", "Name", "Description", "Title"]) ||
         firstText(nested, ["ItemName", "Name", "Title"]) ||
-        "Item",
-      sku: firstText(row, ["SKU", "ItemStandardCode", "ItemCode"]) || firstText(nested, ["SKU", "ItemCode"]) || undefined,
-      quantity: qtyText(row.Quantity),
-      unit: firstText(row, ["UnitName"]) || undefined,
-      unitPrice: moneyText(row.UnitPrice ?? row.PricePerUnit, symbol),
-      discount: moneyText(row.Discount ?? row.AppliedDiscount ?? row.TotalDiscount, symbol),
-      tax: moneyText(row.Tax, symbol),
-      netAmount: moneyText(row.NetAmount ?? row.TotalAmountWithTax ?? row.TotalAmount, symbol),
-      brand: firstText(row, ["BrandName"]) || undefined,
-      category: firstText(row, ["CategoryName"]) || undefined,
-    };
-  });
+        firstText(row, ["SKU", "ItemCode"]) ||
+        "Untitled line";
+      return {
+        id: firstText(row, ["Id", "ItemId"]) || `item-${index}`,
+        name: isGenericItemName(name) ? firstText(row, ["SKU", "ItemCode"]) || "Untitled line" : name,
+        sku: firstText(row, ["SKU", "ItemStandardCode", "ItemCode"]) || firstText(nested, ["SKU", "ItemCode"]) || undefined,
+        quantity: qtyText(row.Quantity),
+        unit: firstText(row, ["UnitName"]) || undefined,
+        unitPrice: moneyText(row.UnitPrice ?? row.PricePerUnit, symbol),
+        discount: moneyText(row.Discount ?? row.AppliedDiscount ?? row.TotalDiscount, symbol),
+        tax: moneyText(row.Tax, symbol),
+        netAmount: moneyText(row.NetAmount ?? row.TotalAmountWithTax ?? row.TotalAmount, symbol),
+        brand: firstText(row, ["BrandName"]) || undefined,
+        category: firstText(row, ["CategoryName"]) || undefined,
+      };
+    });
 }
 
 function toBreakdown(

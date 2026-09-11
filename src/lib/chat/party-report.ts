@@ -19,12 +19,12 @@ import {
   listSavedFilters,
   loadMasterByCode,
 } from "@/lib/api/filters";
-import { listLocations, listOwners, ownerFromUser, type LookupOption } from "@/lib/api/quote-lookups";
+import { listLocations, listOwners, matchPeople, pickPerson, ownerFromUser, type LookupOption } from "@/lib/api/quote-lookups";
 import type { TebUserDetail } from "@/lib/api/types";
 import { aliasFamily, matchTab, tabPhrases } from "@/lib/chat/filter-fields";
 import { REPORT_ENTITIES } from "@/lib/chat/entities";
-import { dateWindow, modeLabel, toLiveDateFilter } from "@/lib/chat/date-filter";
-import { buildDatasetSummary, formatMonthAxisLabel, localAnalysis, rowDate, rowOwner } from "@/lib/chat/charts";
+import { dateWindow, inDateWindow, modeLabel, toLiveDateFilter } from "@/lib/chat/date-filter";
+import { buildDatasetSummary, formatMonthAxisLabel, localAnalysis, rowDate } from "@/lib/chat/charts";
 import type { ChatHistoryTurn } from "@/lib/chat/journey";
 import type {
   ChartSeries,
@@ -151,6 +151,7 @@ function refinePartyRows(
   rows: Record<string, unknown>[],
   intent: ReportIntent,
   ownerIds: string[],
+  ownerLabels: string[],
   meLabel: string,
   extraNames: Record<string, string[]>,
 ): Record<string, unknown>[] {
@@ -160,15 +161,18 @@ function refinePartyRows(
     next = next.filter((row) => {
       const date = rowDate(row) || rowDate(row, "updated");
       if (!date) return false;
-      return date >= window.from && date <= window.to;
+      return inDateWindow(date, window);
     });
   }
-  if (ownerIds.length > 0 || (intent.ownerMe && meLabel)) {
+  const labels = [...ownerLabels, intent.ownerMe ? meLabel : "", intent.ownerName || ""]
+    .map((value) => normalize(value))
+    .filter(Boolean);
+  if (ownerIds.length > 0 || labels.length > 0) {
     next = next.filter((row) => {
       const ownerId = String(row.OwnerId ?? row.ownerid ?? "");
       if (ownerId && ownerIds.includes(ownerId)) return true;
-      if (meLabel && normalize(rowOwner(row)).includes(normalize(meLabel))) return true;
-      return false;
+      const people = ["OwnerName", "Owner", "CreatedBy", "CreatedByName"].map((key) => normalize(String(row[key] ?? ""))).filter(Boolean);
+      return labels.some((label) => people.some((name) => name === label || name.includes(label) || label.includes(name)));
     });
   }
   const haystack = (row: Record<string, unknown>, keys: string[]) =>
@@ -303,10 +307,14 @@ export async function runPartyReport(
   const me = ownerFromUser(user);
   const owners = await listOwners().catch(() => [] as LookupOption[]);
   let ownerIds: string[] = [];
-  if (intent.ownerMe && me) ownerIds = [me.id];
+  const ownerLabels: string[] = [];
+  if (intent.ownerMe && me) {
+    ownerIds = [me.id];
+    if (me.label) ownerLabels.push(me.label);
+  }
   if (intent.ownerName) {
-    const matches = matchLookups(owners, intent.ownerName);
-    if (matches.length === 0) {
+    const picked = pickPerson(matchPeople(owners, intent.ownerName), intent.ownerName);
+    if (!picked) {
       return emptyResult({
         text: `I could not match owner “${intent.ownerName}”.${owners.length ? ` Known values include: ${owners.slice(0, 8).map((row) => row.label).join(", ")}.` : ""}`,
         chips: [entity.plural],
@@ -319,7 +327,8 @@ export async function runPartyReport(
         applied: appliedOf(intent, null, null),
       });
     }
-    ownerIds = [...new Set([...ownerIds, ...matches.map((row) => row.id)])];
+    ownerIds = [...new Set([...ownerIds, picked.id])];
+    ownerLabels.push(picked.label);
   }
 
   const screen = await loadPartyScreen(kind);
@@ -471,7 +480,7 @@ export async function runPartyReport(
       }
 
       const meLabel = me?.label || "";
-      const refined = refinePartyRows(rows, { ...intent, search: undefined }, ownerIds, meLabel, extraNames);
+      const refined = refinePartyRows(rows, { ...intent, search: undefined }, ownerIds, ownerLabels, meLabel, extraNames);
       if (refined.length && refined.length !== rows.length) {
         rows = refined;
         total = refined.length;
@@ -523,7 +532,7 @@ export async function runPartyReport(
       }
     }
     const meLabel = me?.label || "";
-    const refined = refinePartyRows(rows, { ...intent, search: needle ? undefined : intent.search }, ownerIds, meLabel, extraNames);
+    const refined = refinePartyRows(rows, { ...intent, search: needle ? undefined : intent.search }, ownerIds, ownerLabels, meLabel, extraNames);
     if (refined.length !== rows.length) {
       rows = refined;
       total = refined.length;

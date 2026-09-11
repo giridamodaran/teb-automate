@@ -56,6 +56,7 @@ export const REPORT_ENTITIES: Record<ReportEntityKey, ReportEntity> = {
       { key: "Title", title: "Title" },
       { key: "CompanyName", title: "Company" },
       { key: "OwnerName", title: "Owner" },
+      { key: "CreatedBy", title: "Created by" },
       { key: "Status", title: "Status" },
       { key: "Priority", title: "Priority" },
       { key: "CreatedDate", title: "Created", kind: "date" },

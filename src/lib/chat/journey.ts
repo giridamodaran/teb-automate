@@ -39,6 +39,7 @@ const TOPIC_QUESTIONS: Record<JourneyTopicId, string[]> = {
   ],
   lead: [
     "Leads I own this month",
+    "Leads created by me",
     "Leads where owner = me and status = Open",
     "What filters can I use on leads?",
   ],

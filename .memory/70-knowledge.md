@@ -84,18 +84,18 @@ Shell **Ask** (`src/components/chat/ChatPanel.tsx`) is a journey, not a blank pr
 
 Then it parses the question (`src/lib/chat/parse.ts`), resolves GUIDs, then `runReportQuestion` (`src/lib/chat/execute.ts`):
 
-1. MICRO `GetFilterControls` `{ ModuleCode, ScreenCode: MANAGE }` → `Tabs` + `Controls` + `ExtraApi`. Lead uses `LeadManagement` / `MANAGE`.
-2. Lookups: that tab’s `ExtraApi` first, then owners / workflows / stages / locations / MASTERBYCODE / company search
+1. MICRO `GetFilterControls` `{ ModuleCode, ScreenCode: MANAGE }` → `Tabs` + `Controls` + `ExtraApi`. Lead uses `TEBLead` / `MANAGE` (`LeadManagement` returns “Filter form not created”).
+2. Lookups: that tab’s `ExtraApi` first, then owners / workflows / stages / locations / MASTERBYCODE / company search. Owner names come from `GetSubscriberActiveUsers` (`Text`) plus `FnGetSubscriberUsersDropdown`, not session `UserName` alone.
 3. List: unwrapped DYNAMIC `AcGetData` with `FilterId: null` + combined `FilterValues` (AND tabs, OR values on one tab)
 4. Count fallback: MICRO `gateway/reporting/{GetTeamBasedQuoteDetails|Lead|Order|Opportunity|InvoiceDetails}`
 
-Lead phrases: `where owner = X,Y`, `assigned to me`, `status = Open`, `source = Website`, plus dates.
+Lead phrases: `Leads created by Priya`, `where owner = X,Y`, `assigned to me`, `status = Open`, `source = Website`, plus dates. `created by {user}` maps to the live OWNER tab (`ownerid`) and also matches `CreatedBy` / `OwnerName` on the row. Do not return the unfiltered lead list for that question.
 
 Opportunity (`SalesManagement` / `TEBSale`): same combined tabs, plus **Items**.
 
 Quote (`EstimationManagement` / `TEBQuote`): Manage FILTER via `GetFilterControls` (ScreenCode `MANAGE`, then `QUOTEFILTER`). Spoken fields include owner, assignee, status/workflow, company, contact, location / billing / shipping, type, currency, quote no, valid for, dates, and the same item stack (`ITEM` / `CATEGORY` / `BRAND` / `SKU` / `MODEL`, reporting `Itemfilter`). Catalog: `ProductsManagement` `ITEM` `DROPDOWN`. Phrases: `quotes with item iPhone`, `quotes where owner = me and type = Standard`.
 
-Quote **view** (Ask, read-only): `View quote Q-1024` / `Quote profile for …` / `Open quote …`. Header `GETQUOTEDETAIL` (`Module: EstimationManagement`, `Code: QUOTE`, `Action: GETQUOTEDETAIL`; useful payload is `Value` JSON). Items + price breakdown: same dispatcher `VIEWCONSUMEDITEM` (`ItemDetail`, `TotalSummary`) — not SalesManagement (that 500s). Templates: MICRO `gateway/common/getsubscribertemplatedropdown` unwrapped `{ Module: TEBQuote, LocationId? }` (wrapping `{ data }` returned 0 rows). PDF preview: TEMPLATE `AcDownloadPdf` with `{ data: { Module: TEMPLATE, Code: TEBQuote, Action: SAVETEMPLATE, PrimaryKey: "", Data: JSON.stringify({ EntityId, Module: TEBQuote, TemplateId }) } }`. `Value` is a pre-signed S3 PDF URL (~2 day expiry). Notes: MICRO `GetSubscriberNotes` wrapped `{ data: { EntityId, Module: TEBQuote } }` (unwrapped 400s). Actions: `GETQUOTEACTIVITY`. Open in browser: `https://live.teb.cloud/sales/quote/view/{id}` (`NEXT_PUBLIC_TEB_LIVE_APP`). Do not post `CHANGEQUOTESTATUS` from Ask. Do not rebuild the composer.
+Quote **view** (Ask, read-only): `View quote Q-1024` / `Quote profile for …` / `Open quote …`. Header `GETQUOTEDETAIL` (`Module: EstimationManagement`, `Code: QUOTE`, `Action: GETQUOTEDETAIL`; useful payload is `Value` JSON). Items + price breakdown: same dispatcher `VIEWCONSUMEDITEM` (`ItemDetail`, `TotalSummary`) — not SalesManagement (that 500s). Skip trailing empty `ItemDetail` rows (no product/SKU, amount 0, name would otherwise be “Item”). Templates: MICRO `gateway/common/getsubscribertemplatedropdown` unwrapped `{ Module: TEBQuote, LocationId? }` (wrapping `{ data }` returned 0 rows). PDF preview: TEMPLATE `AcDownloadPdf` with `{ data: { Module: TEMPLATE, Code: TEBQuote, Action: SAVETEMPLATE, PrimaryKey: "", Data: JSON.stringify({ EntityId, Module: TEBQuote, TemplateId }) } }`. `Value` is a pre-signed S3 PDF URL (~2 day expiry). Notes: MICRO `GetSubscriberNotes` wrapped `{ data: { EntityId, Module: TEBQuote } }` (unwrapped 400s). Actions: `GETQUOTEACTIVITY`. Open in browser: `https://live.teb.cloud/sales/quote/view/{id}` (`NEXT_PUBLIC_TEB_LIVE_APP`). Do not post `CHANGEQUOTESTATUS` from Ask. Do not rebuild the composer.
 
 Order (`OrderManagement` / `TEBOrder`): `GetFilterControls` ScreenCode `MANAGE`, then `ORDERFILTER`. Live managefilter route is `/sales/order/managefilter` (`screen: ORDERFILTER`). Same combined tabs + item stack. Spoken extras: order no, delivery, payment, warehouse. Phrases: `orders with item iPhone`, `order no = SO-1024`.
 
@@ -123,10 +123,10 @@ Created Filter (`TabCode: DATE`, `FieldType: CREATEDFILTER` by default) modes fr
 |---|---|---|
 | ANY | Any | `Mode: ANY` |
 | WITHIN | With In (incl. today) | `DatePeriod.Period` + `PeriodType` `FILTERDAYS` / `FILTERMONTHS` / `FILTERYEARS`, default last 7 days |
-| BETWEEN | Between | `DateRange.FromDate` / `ToDate` |
+| BETWEEN | Between | `DateRange.FromDate` / `ToDate` as **local** `YYYY-MM-DD` (not UTC-sliced ISO). Ask maps “last N days” to BETWEEN today-(N-1)…today so today is included. |
 | FINANCIALPERIOD | Financial Period | `FinancePeriod` |
 
-Also `UPDATEDFILTER` / `NOTUPDATEDFILTER` / `CLOSEDFILTER` / `SCHEDULEFILTER`. `AnyUpdate.PeriodType` is LAST. Ask maps “last N days” to WITHIN, calendar phrases (this month, today) to BETWEEN. Charts + `/api/ask/analyze`.
+Also `UPDATEDFILTER` / `NOTUPDATEDFILTER` / `CLOSEDFILTER` / `SCHEDULEFILTER`. `AnyUpdate.PeriodType` is LAST. Ask maps “last N days” to BETWEEN (today included), calendar phrases (this month, today) to BETWEEN. Charts + `/api/ask/analyze`. Quote list rows often have `QuoteValue: 0`; totals use `QuoteCurrentValue` / `QuoteNetValue`. Analysis highlights counts and money in `**bold**`.
 
 ## Headers (CORS-safe)
 

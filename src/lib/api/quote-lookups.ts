@@ -269,6 +269,99 @@ export function ownerFromUser(user?: TebUserDetail | null): LookupOption | null 
   return { id, label, extra: row };
 }
 
+function looksLikeUserId(value: string): boolean {
+  const text = value.trim();
+  if (!text || /\s/.test(text)) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
+  return /^[0-9a-f]{24}$/i.test(text);
+}
+
+function personNeedles(option: LookupOption): string[] {
+  const extra = option.extra ?? {};
+  return [
+    option.label,
+    option.id,
+    String(extra.Text ?? ""),
+    String(extra.UserName ?? ""),
+    String(extra.FullName ?? ""),
+    String(extra.Name ?? ""),
+    String(extra.Email ?? ""),
+    String(extra.SubText ?? ""),
+    [extra.FirstName, extra.LastName].filter(Boolean).join(" "),
+  ]
+    .map((value) => value.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+export function matchPeople(options: LookupOption[], needle: string): LookupOption[] {
+  const want = needle.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!want) return [];
+  const exact = options.filter((option) => personNeedles(option).includes(want) || option.id === needle);
+  if (exact.length > 0) return exact;
+  const starts = options.filter((option) => personNeedles(option).some((value) => value.startsWith(want)));
+  if (starts.length === 1) return starts;
+  return options.filter((option) => personNeedles(option).some((value) => value.includes(want)));
+}
+
+export function pickPerson(matches: LookupOption[], needle: string): LookupOption | null {
+  if (matches.length === 0) return null;
+  const want = needle.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ").trim();
+  const exact = matches.find((option) => personNeedles(option).includes(want) || option.id === needle);
+  if (exact) return exact;
+  const starts = matches.filter((option) => personNeedles(option).some((value) => value.startsWith(want)));
+  if (starts.length === 1) return starts[0];
+  if (matches.length === 1) return matches[0];
+  return null;
+}
+
+function mergeOwnerOptions(groups: LookupOption[][]): LookupOption[] {
+  const seen = new Map<string, LookupOption>();
+  const better = (next: LookupOption, current: LookupOption) => {
+    const nextBad = !next.label || looksLikeUserId(next.label);
+    const currentBad = !current.label || looksLikeUserId(current.label);
+    if (currentBad && !nextBad) return true;
+    if (!currentBad && !nextBad && next.label.includes(" ") && !current.label.includes(" ")) return true;
+    return false;
+  };
+  for (const group of groups) {
+    for (const option of group) {
+      if (!option.id) continue;
+      const current = seen.get(option.id);
+      if (!current) {
+        seen.set(option.id, option);
+        continue;
+      }
+      if (better(option, current)) {
+        seen.set(option.id, { ...current, ...option, extra: { ...current.extra, ...option.extra } });
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
+export async function listOwners(): Promise<LookupOption[]> {
+  const groups: LookupOption[][] = [asLookupOptions(getSubscriberUsers())];
+  const dropdown = await getListWithFallback("USER", ["FnGetSubscriberUsersDropdown()", "FnGetSubscriberUsersDropdown"]);
+  if (dropdown.length > 0) groups.push(dropdown);
+  try {
+    const envelope = await tebRequest("MICRO", "gateway/admin/GetSubscriberActiveUsers?Module=TEBLead&NoData=No%20Owner");
+    const active = asLookupOptions(envelope.Data ?? envelope.value ?? envelope.Value ?? envelope);
+    if (active.length > 0) groups.push(active);
+  } catch {
+    // Quote / generic owner dropdown still covers most logins.
+  }
+  const company = await getListWithFallback("COMPANY", [
+    "FnGetCurrentUserTeamMembers()?moduleName=TEBQuote",
+    "FnGetCurrentUserTeamMembers?moduleName=TEBQuote",
+    "FnGetCurrentUserTeamMembers()?moduleName=SalesManagement",
+    "FnGetCurrentUserTeamMembers?moduleName=SalesManagement",
+  ]);
+  if (company.length > 0) groups.push(company);
+  const fallback = await getListWithFallback("MICRO", ["gateway/admin/GetUserDropdown"]);
+  if (fallback.length > 0) groups.push(fallback);
+  return mergeOwnerOptions(groups);
+}
+
 export async function getSubscriberUserCurrency(): Promise<LookupOption | null> {
   for (const path of ["FnGetSubscriberUserCurrency", "FnGetSubscriberUserCurrency()"]) {
     try {
@@ -311,19 +404,6 @@ function currencyFromUnknown(raw: unknown): LookupOption | null {
     }
   }
   return null;
-}
-
-export async function listOwners(): Promise<LookupOption[]> {
-  const fromSession = asLookupOptions(getSubscriberUsers());
-  if (fromSession.length > 0) return fromSession;
-  const company = await getListWithFallback("COMPANY", [
-    "FnGetCurrentUserTeamMembers()?moduleName=TEBQuote",
-    "FnGetCurrentUserTeamMembers?moduleName=TEBQuote",
-    "FnGetCurrentUserTeamMembers()?moduleName=SalesManagement",
-    "FnGetCurrentUserTeamMembers?moduleName=SalesManagement",
-  ]);
-  if (company.length > 0) return company;
-  return getListWithFallback("MICRO", ["gateway/admin/GetUserDropdown"]);
 }
 
 function parseMaybeJson(raw: unknown): unknown {
