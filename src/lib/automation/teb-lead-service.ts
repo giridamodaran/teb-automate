@@ -319,23 +319,85 @@ function extractLeadItems(payload: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Creates a NEW Lead record in TEB Cloud (DISABLED PER USER INSTRUCTION).
+ * Creates a NEW Lead record in TEB Cloud using live SaveLeadDetail API with default system fields.
  */
 export async function createLead(
-  _phoneNumber: string,
-  _leadData: Record<string, unknown>,
-  _token: string
+  phoneNumber: string,
+  leadData: Record<string, unknown>,
+  token: string
 ): Promise<LeadOperationResult> {
-  /*
-    // LEAD CREATION DISABLED PER USER INSTRUCTION
-    // Only UPDATE functionality is active.
-  */
+  const hosts = getTebHosts();
+  const createUrl = `${hosts.MICRO}/gateway/Lead/SaveLeadDetail`;
+
+  const customFieldDefs = await getCustomFieldDefinitions(token, hosts);
+  const locationId = await getDefaultLocationId(token, hosts);
+  const currencyId = await getDefaultCurrencyId(token, hosts);
+
+  const leadTitle = String(
+    leadData.name || leadData.Name || leadData.LeadName || leadData.title || leadData.Title || `New Lead (${phoneNumber})`
+  );
+
+  const customFieldArray = buildMergedCustomFields(leadData, customFieldDefs, []);
+  const emailVal = String(leadData.email || leadData.Email || "");
+
+  const savePayload = {
+    FullName: leadTitle,
+    LeadName: leadTitle,
+    Location: locationId,
+    LocationId: locationId,
+    Site: locationId,
+    CurrencyId: currencyId,
+    Owner: "68ac22e2a608471805479fce",
+    OwnerId: "68ac22e2a608471805479fce",
+    WorkFlow: "695e64cf510a06f8e3709363",
+    WorkflowId: "695e64cf510a06f8e3709363",
+    Phone: [
+      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: extractNationalPhoneDigits(phoneNumber) || phoneNumber }
+    ],
+    Email: emailVal ? [
+      { Title: "Work", Icon: "mat_outline:email", Type: "EMAIL", Value: emailVal }
+    ] : [],
+    CustomField: customFieldArray,
+  };
+
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    Type: "WEB",
+    DeviceInfo: JSON.stringify({ BrowserName: "AutomationEngine", browserVersion: "1.0.0" }),
+    DeviceAddress: "127.0.0.1",
+    ApiHitDate: new Date().toString(),
+  };
+
+  const res = await fetch(createUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(savePayload),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    return {
+      success: false,
+      leadId: "",
+      isNewLead: true,
+      message: `Failed to create lead (${res.status}): ${errText}`,
+      fields: savePayload,
+    };
+  }
+
+  const responseJson = await res.json();
+  const newId = String(responseJson?.Data?.Id || responseJson?.Data?.LeadId || "NEW_LEAD");
+
   return {
-    success: false,
-    leadId: "",
+    success: responseJson?.Succeeded !== false,
+    leadId: newId,
     isNewLead: true,
-    message: "Lead creation functionality is disabled. Only updates are permitted.",
-    fields: {},
+    message: responseJson?.Messages?.[0] || "New Lead created successfully in TEB Cloud",
+    fields: savePayload,
+    rawResponse: responseJson,
   };
 }
 
@@ -449,7 +511,7 @@ export async function executeLeadWebhookAutomation(payload: Record<string, unkno
     // 3. Search for Lead by Phone Number
     const leadMatch = await searchLeadByPhone(cleanedPhone, token);
 
-    // 4. Update Existing Lead ONLY (Lead Creation is Disabled per user request)
+    // 4. Update Existing Lead or Create New Lead
     if (leadMatch) {
       const updateResult = await updateLead(leadMatch.id, leadData, token, leadMatch.rawRecord);
       if (updateResult.success) {
@@ -473,16 +535,32 @@ export async function executeLeadWebhookAutomation(payload: Record<string, unkno
         };
       }
     } else {
-      // LEAD CREATION DISABLED PER USER INSTRUCTION - DO NOT CREATE NEW LEAD
-      const msg = `No matching lead found in TEB Cloud for phone number ${cleanedPhone}. Lead creation is disabled; update aborted.`;
-      await markLeadLogFailed(supabaseLogId, msg);
-      return {
-        success: false,
-        status: 404,
-        action: "LEAD_NOT_FOUND",
-        supabaseLogId,
-        error: msg,
-      };
+      // Create New Lead if search returns no existing lead
+      const createResult = await createLead(cleanedPhone, leadData, token);
+      if (createResult.success) {
+        await markLeadLogCompleted(supabaseLogId, createResult.leadId, "CREATED_NEW_LEAD");
+        return {
+          success: true,
+          status: 201,
+          action: "CREATED_NEW_LEAD",
+          supabaseLogId,
+          lead: {
+            id: createResult.leadId,
+            phone: cleanedPhone,
+            title: String(leadData.name || leadData.Name || leadData.LeadName || `New Lead (${cleanedPhone})`),
+          },
+          result: createResult,
+        };
+      } else {
+        await markLeadLogFailed(supabaseLogId, createResult.message);
+        return {
+          success: false,
+          status: 500,
+          action: "CREATED_NEW_LEAD",
+          supabaseLogId,
+          error: createResult.message,
+        };
+      }
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : "Automation failure";
