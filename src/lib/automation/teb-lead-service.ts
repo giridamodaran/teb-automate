@@ -142,7 +142,8 @@ export function buildMergedCustomFields(
   const reserved = new Set([
     "name", "Name", "LeadName", "FullName", "title", "Title",
     "phone", "Phone", "mobile", "Mobile", "phoneNumber", "waId",
-    "email", "Email", "secretKey"
+    "email", "Email", "secretKey", "secret",
+    "utm_source", "utm_medium", "utm_campaign", "utm_id", "utm_term", "utm_content"
   ]);
 
   const mergedMap = new Map<string, any>();
@@ -157,13 +158,19 @@ export function buildMergedCustomFields(
     }
   }
 
-  // 2. Update/insert ONLY incoming fields from webhook payload
+  // 2. Update/insert ONLY incoming fields that match valid TEB custom field definitions
   for (const [key, value] of Object.entries(incomingPayload)) {
     if (!reserved.has(key) && value !== undefined && value !== null && String(value).trim() !== "") {
-      const def = customFieldDefs.find(
-        (d) => d.ControlName === key || String(d.ControlName).toLowerCase() === key.toLowerCase()
-      );
       const lowerKey = key.toLowerCase();
+      const def = customFieldDefs.find(
+        (d) => d.ControlName === key || String(d.ControlName).toLowerCase() === lowerKey
+      );
+
+      // Only include if field exists in TEB definitions or existing record
+      if (!def && !mergedMap.has(lowerKey)) {
+        continue;
+      }
+
       const existing = mergedMap.get(lowerKey) || {};
 
       mergedMap.set(lowerKey, {
