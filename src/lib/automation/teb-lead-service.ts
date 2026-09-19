@@ -319,85 +319,23 @@ function extractLeadItems(payload: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Creates a NEW Lead record in TEB Cloud using live SaveLeadDetail API with default system fields.
+ * Creates a NEW Lead record in TEB Cloud (DISABLED PER USER INSTRUCTION).
  */
 export async function createLead(
-  phoneNumber: string,
-  leadData: Record<string, unknown>,
-  token: string
+  _phoneNumber: string,
+  _leadData: Record<string, unknown>,
+  _token: string
 ): Promise<LeadOperationResult> {
-  const hosts = getTebHosts();
-  const createUrl = `${hosts.MICRO}/gateway/Lead/SaveLeadDetail`;
-
-  const customFieldDefs = await getCustomFieldDefinitions(token, hosts);
-  const locationId = await getDefaultLocationId(token, hosts);
-  const currencyId = await getDefaultCurrencyId(token, hosts);
-
-  const leadTitle = String(
-    leadData.name || leadData.Name || leadData.LeadName || leadData.title || leadData.Title || `New Lead (${phoneNumber})`
-  );
-
-  const customFieldArray = buildMergedCustomFields(leadData, customFieldDefs, []);
-  const emailVal = String(leadData.email || leadData.Email || "");
-
-  const savePayload = {
-    FullName: leadTitle,
-    LeadName: leadTitle,
-    Location: locationId,
-    LocationId: locationId,
-    Site: locationId,
-    CurrencyId: currencyId,
-    Owner: "68ac22e2a608471805479fce",
-    OwnerId: "68ac22e2a608471805479fce",
-    WorkFlow: "695e64cf510a06f8e3709363",
-    WorkflowId: "695e64cf510a06f8e3709363",
-    Phone: [
-      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: extractNationalPhoneDigits(phoneNumber) || phoneNumber }
-    ],
-    Email: emailVal ? [
-      { Title: "Work", Icon: "mat_outline:email", Type: "EMAIL", Value: emailVal }
-    ] : [],
-    CustomField: customFieldArray,
-  };
-
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    Type: "WEB",
-    DeviceInfo: JSON.stringify({ BrowserName: "AutomationEngine", browserVersion: "1.0.0" }),
-    DeviceAddress: "127.0.0.1",
-    ApiHitDate: new Date().toString(),
-  };
-
-  const res = await fetch(createUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(savePayload),
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    return {
-      success: false,
-      leadId: "",
-      isNewLead: true,
-      message: `Failed to create lead (${res.status}): ${errText}`,
-      fields: savePayload,
-    };
-  }
-
-  const responseJson = await res.json();
-  const newId = String(responseJson?.Data?.Id || responseJson?.Data?.LeadId || "NEW_LEAD");
-
+  /*
+    // LEAD CREATION DISABLED PER USER INSTRUCTION
+    // Only UPDATE functionality is active.
+  */
   return {
-    success: responseJson?.Succeeded !== false,
-    leadId: newId,
+    success: false,
+    leadId: "",
     isNewLead: true,
-    message: responseJson?.Messages?.[0] || "New Lead created successfully in TEB Cloud",
-    fields: savePayload,
-    rawResponse: responseJson,
+    message: "Lead creation functionality is disabled. Only updates are permitted.",
+    fields: {},
   };
 }
 
