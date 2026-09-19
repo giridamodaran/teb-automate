@@ -30,6 +30,25 @@ export function cleanPhoneNumber(phone: string): string {
 }
 
 /**
+ * Builds a TEB-compatible CustomFields array from dynamic WATI attributes.
+ */
+export function formatCustomFields(leadData: Record<string, unknown>) {
+  const reserved = new Set(["name", "Name", "LeadName", "title", "Title", "phone", "Phone", "mobile", "Mobile", "phoneNumber", "waId", "email", "Email", "secretKey"]);
+  const customFields: Array<{ Code: string; DbFieldName: string; Value: unknown }> = [];
+  
+  for (const [key, value] of Object.entries(leadData)) {
+    if (!reserved.has(key) && value !== undefined && value !== null) {
+      customFields.push({
+        Code: key,
+        DbFieldName: key.toLowerCase(),
+        Value: value,
+      });
+    }
+  }
+  return customFields;
+}
+
+/**
  * Searches TEB for a Lead matching the provided phone number.
  */
 export async function searchLeadByPhone(
@@ -175,6 +194,8 @@ export async function createLead(
     leadData.name || leadData.Name || leadData.LeadName || leadData.title || leadData.Title || `New Lead (${phoneNumber})`
   );
 
+  const customFieldsArray = formatCustomFields(leadData);
+
   const createPayload = {
     Title: leadTitle,
     LeadName: leadTitle,
@@ -182,6 +203,7 @@ export async function createLead(
     Phone: phoneNumber,
     MobileNumber: phoneNumber,
     phone: phoneNumber,
+    CustomFields: customFieldsArray,
     ...leadData,
   };
 
@@ -229,9 +251,12 @@ async function createLeadFallback(
 ): Promise<LeadOperationResult> {
   const fallbackUrl = `${hosts.USER}/api/Lead/AcSaveLead`;
 
+  const customFieldsArray = formatCustomFields(leadData);
+
   const createPayload = {
     Phone: phoneNumber,
     MobileNumber: phoneNumber,
+    CustomFields: customFieldsArray,
     ...leadData,
   };
 
@@ -286,9 +311,12 @@ export async function updateLead(
   const hosts = getTebHosts();
   const updateUrl = `${hosts.DYNAMIC}/api/dynamic/FnUpdateLead`;
 
+  const customFieldsArray = formatCustomFields(leadData);
+
   const updatePayload = {
     Id: leadId,
     LeadId: leadId,
+    CustomFields: customFieldsArray,
     ...leadData,
   };
 
@@ -335,6 +363,8 @@ async function updateLeadFallback(
 ): Promise<LeadOperationResult> {
   const fallbackUrl = `${hosts.USER}/api/Lead/AcUpdateLead`;
 
+  const customFieldsArray = formatCustomFields(leadData);
+
   const headers = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
@@ -346,7 +376,7 @@ async function updateLeadFallback(
     const res = await fetch(fallbackUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify({ Id: leadId, ...leadData }),
+      body: JSON.stringify({ Id: leadId, CustomFields: customFieldsArray, ...leadData }),
       cache: "no-store",
     });
 
