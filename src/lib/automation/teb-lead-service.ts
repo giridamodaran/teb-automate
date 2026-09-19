@@ -404,51 +404,38 @@ export async function updateLead(
   existingRecord: Record<string, unknown> = {}
 ): Promise<LeadOperationResult> {
   const hosts = getTebHosts();
-  const updateUrl = `${hosts.MICRO}/gateway/Lead/SaveLeadDetail`;
+  const updateUrl = `${hosts.DYNAMIC}/AcAddDetail`;
 
   const customFieldDefs = await getCustomFieldDefinitions(token, hosts);
-  const locationId = await getDefaultLocationId(token, hosts);
 
   // 1. Preserve existing System Fields
   const existingFullName = String(existingRecord.FullName || existingRecord.LeadName || existingRecord.Name || "");
   const existingCompany = String(existingRecord.CompanyName || "");
-  const existingCurrency = String(existingRecord.CurrencyId || "049");
-  const existingOwner = String(existingRecord.OwnerId || (Array.isArray(existingRecord.AssigneeId) ? existingRecord.AssigneeId[0] : "68ac22e2a608471805479fce"));
-  const existingWorkflow = String(existingRecord.WorkflowId || "6a3e3ff89b6e94694c113a08");
-  const existingStatus = String(existingRecord.StatusName || "NPD Discussion");
-  const existingPhones = Array.isArray(existingRecord.PhoneDetail) ? existingRecord.PhoneDetail : (Array.isArray(existingRecord.Phone) ? existingRecord.Phone : []);
-  const existingEmails = Array.isArray(existingRecord.EmailDetail) ? existingRecord.EmailDetail : (Array.isArray(existingRecord.Email) ? existingRecord.Email : []);
-  const existingCustomFields = Array.isArray(existingRecord.CustomField) ? existingRecord.CustomField : [];
 
   // 2. Build merged CustomFields array (preserving non-automation custom fields)
+  const existingCustomFields = Array.isArray(existingRecord.CustomField) ? existingRecord.CustomField : [];
   const mergedCustomFields = buildMergedCustomFields(leadData, customFieldDefs, existingCustomFields);
 
   // 3. Keep existing FullName/Company unless explicitly provided in incoming payload
   const finalTitle = leadData.name || leadData.Name || leadData.LeadName || existingFullName || "Lead";
   const finalCompany = leadData.company || leadData.CompanyName || existingCompany;
 
-  // 4. Construct SaveLeadDetail payload preserving all un-edited system fields
-  const savePayload = {
-    ...existingRecord, // Preserve all un-edited raw fields
-    Id: leadId,
-    LeadId: leadId,
+  // 4. Construct AcAddDetail payload using captured TEB Cloud UI structure
+  const innerData = {
+    ...existingRecord,
     FullName: finalTitle,
-    LeadName: finalTitle,
     CompanyName: finalCompany,
-    Location: locationId,
-    LocationId: locationId,
-    Site: locationId,
-    CurrencyId: existingCurrency,
-    Owner: existingOwner,
-    OwnerId: existingOwner,
-    WorkFlow: existingWorkflow,
-    WorkflowId: existingWorkflow,
-    StatusName: existingStatus,
-    Phone: existingPhones.length > 0 ? existingPhones : [
-      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: cleanPhoneNumber(String(leadData.phone || leadData.phoneNumber || leadData.waId || "")) }
-    ],
-    Email: existingEmails,
     CustomField: mergedCustomFields,
+  };
+
+  const savePayload = {
+    data: {
+      Module: "LeadManagement",
+      Code: "LEAD",
+      PrimaryKey: leadId,
+      Data: JSON.stringify(innerData),
+      Action: "ADD",
+    },
   };
 
   const headers = {
@@ -456,9 +443,6 @@ export async function updateLead(
     "Content-Type": "application/json",
     Accept: "application/json",
     Type: "WEB",
-    DeviceInfo: JSON.stringify({ BrowserName: "AutomationEngine", browserVersion: "1.0.0" }),
-    DeviceAddress: "127.0.0.1",
-    ApiHitDate: new Date().toString(),
   };
 
   const res = await fetch(updateUrl, {
@@ -482,10 +466,10 @@ export async function updateLead(
   const responseJson = await res.json();
 
   return {
-    success: responseJson?.Succeeded !== false,
+    success: responseJson?.Succeeded !== false && responseJson?.Data !== false,
     leadId,
     isNewLead: false,
-    message: responseJson?.Messages?.[0] || "Lead updated successfully in TEB Cloud",
+    message: responseJson?.Messages?.[0] || responseJson?.Message || "Lead updated successfully in TEB Cloud",
     fields: savePayload,
     rawResponse: responseJson,
   };
@@ -520,7 +504,7 @@ export async function executeLeadWebhookAutomation(payload: Record<string, unkno
     // 3. Search for Lead by Phone Number
     const leadMatch = await searchLeadByPhone(cleanedPhone, token);
 
-    // 4. Update Existing Lead or Create New Lead
+    // 4. Update Existing Lead ONLY (Lead Creation is Disabled per user request)
     if (leadMatch) {
       const updateResult = await updateLead(leadMatch.id, leadData, token, leadMatch.rawRecord);
       if (updateResult.success) {
@@ -544,32 +528,16 @@ export async function executeLeadWebhookAutomation(payload: Record<string, unkno
         };
       }
     } else {
-      // Create New Lead
-      const createResult = await createLead(cleanedPhone, leadData, token);
-      if (createResult.success) {
-        await markLeadLogCompleted(supabaseLogId, createResult.leadId, "CREATED_NEW_LEAD");
-        return {
-          success: true,
-          status: 201,
-          action: "CREATED_NEW_LEAD",
-          supabaseLogId,
-          lead: {
-            id: createResult.leadId,
-            phone: cleanedPhone,
-            title: String(leadData.name || leadData.Name || leadData.LeadName || `New Lead (${cleanedPhone})`),
-          },
-          result: createResult,
-        };
-      } else {
-        await markLeadLogFailed(supabaseLogId, createResult.message);
-        return {
-          success: false,
-          status: 500,
-          action: "CREATED_NEW_LEAD",
-          supabaseLogId,
-          error: createResult.message,
-        };
-      }
+      // LEAD CREATION DISABLED PER USER INSTRUCTION - DO NOT CREATE NEW LEAD
+      const msg = `No matching lead found in TEB Cloud for phone number ${cleanedPhone}. Lead creation is disabled; update aborted.`;
+      await markLeadLogFailed(supabaseLogId, msg);
+      return {
+        success: false,
+        status: 404,
+        action: "LEAD_NOT_FOUND",
+        supabaseLogId,
+        error: msg,
+      };
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : "Automation failure";
