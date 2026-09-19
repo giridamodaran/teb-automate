@@ -210,7 +210,9 @@ export async function searchLeadByPhone(
     ApiHitDate: new Date().toString(),
   };
 
-  const searchTerms = Array.from(new Set([searchDigits, rawDigits])).filter(Boolean);
+  const searchTerms = Array.from(
+    new Set([searchDigits, rawDigits, phoneNumber.trim(), `+${rawDigits}`])
+  ).filter(Boolean);
 
   for (const term of searchTerms) {
     try {
