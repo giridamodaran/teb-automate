@@ -31,6 +31,7 @@ export function cleanPhoneNumber(phone: string): string {
 
 let cachedCustomFieldDefs: any[] | null = null;
 let cachedDefaultLocationId = "";
+let cachedDefaultCurrencyId = "";
 
 /**
  * Fetches TEB Custom Field definitions for LeadManagement.
@@ -89,38 +90,88 @@ async function getDefaultLocationId(token: string, hosts: Record<string, string>
   } catch {
     // Ignore fetch error
   }
-  return "68a41460b74ff993b1731077"; // Default fallback
+  return "68a41460b74ff993b1731077";
 }
 
 /**
- * Formats custom field objects for TEB SaveLeadDetail DTO.
+ * Fetches default Currency ID from Subscriber Settings.
  */
-export function formatCustomFields(leadData: Record<string, unknown>, customFieldDefs: any[]) {
+async function getDefaultCurrencyId(token: string, hosts: Record<string, string>): Promise<string> {
+  if (cachedDefaultCurrencyId) return cachedDefaultCurrencyId;
+  try {
+    const res = await fetch(`${hosts.COMPANY}/FnGetSubscriberSetting()?$expand=Currency`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        Type: "WEB",
+      },
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const currId = String(json.CurrencyId || json.Currency?.Id || json.CurrencyCode || "");
+      if (currId) {
+        cachedDefaultCurrencyId = currId;
+        return cachedDefaultCurrencyId;
+      }
+    }
+  } catch {
+    // Ignore fetch error
+  }
+  return "049";
+}
+
+/**
+ * Merges incoming webhook fields with existing custom fields while preserving all non-automation custom fields.
+ */
+export function buildMergedCustomFields(
+  incomingPayload: Record<string, unknown>,
+  customFieldDefs: any[],
+  existingCustomFields: any[] = []
+) {
   const reserved = new Set([
     "name", "Name", "LeadName", "FullName", "title", "Title",
     "phone", "Phone", "mobile", "Mobile", "phoneNumber", "waId",
     "email", "Email", "secretKey"
   ]);
 
-  const customFields: any[] = [];
-  for (const [key, value] of Object.entries(leadData)) {
+  const mergedMap = new Map<string, any>();
+
+  // 1. Preserve all existing custom fields from the lead record
+  if (Array.isArray(existingCustomFields)) {
+    for (const cf of existingCustomFields) {
+      const key = String(cf.PropertyName || cf.ControlName || cf.Code || cf.Label || "").toLowerCase();
+      if (key) {
+        mergedMap.set(key, { ...cf });
+      }
+    }
+  }
+
+  // 2. Update/insert ONLY incoming fields from webhook payload
+  for (const [key, value] of Object.entries(incomingPayload)) {
     if (!reserved.has(key) && value !== undefined && value !== null && String(value).trim() !== "") {
       const def = customFieldDefs.find(
         (d) => d.ControlName === key || String(d.ControlName).toLowerCase() === key.toLowerCase()
       );
-      customFields.push({
-        Id: def?.Id || "",
-        CustomFieldId: def?.Id || "",
+      const lowerKey = key.toLowerCase();
+      const existing = mergedMap.get(lowerKey) || {};
+
+      mergedMap.set(lowerKey, {
+        ...existing,
+        Id: def?.Id || existing.Id || existing.CustomFieldId || "",
+        CustomFieldId: def?.Id || existing.CustomFieldId || existing.Id || "",
         Code: key,
         ControlName: key,
         PropertyName: key,
-        Label: def?.Title || key,
+        Label: def?.Title || existing.Label || key,
         Value: String(value),
-        ControlType: def?.ControlType || "TEXT",
+        ControlType: def?.ControlType || existing.ControlType || "TEXT",
       });
     }
   }
-  return customFields;
+
+  return Array.from(mergedMap.values());
 }
 
 /**
@@ -186,7 +237,7 @@ export async function searchLeadByPhone(
       }
     }
   } catch {
-    // Ignore error and try fallback
+    // Ignore error
   }
 
   return null;
@@ -207,7 +258,7 @@ function extractLeadItems(payload: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Creates a NEW Lead record in TEB Cloud using live SaveLeadDetail API.
+ * Creates a NEW Lead record in TEB Cloud using live SaveLeadDetail API with default system fields.
  */
 export async function createLead(
   phoneNumber: string,
@@ -219,12 +270,13 @@ export async function createLead(
 
   const customFieldDefs = await getCustomFieldDefinitions(token, hosts);
   const locationId = await getDefaultLocationId(token, hosts);
+  const currencyId = await getDefaultCurrencyId(token, hosts);
 
   const leadTitle = String(
     leadData.name || leadData.Name || leadData.LeadName || leadData.title || leadData.Title || `New Lead (${phoneNumber})`
   );
 
-  const customFieldArray = formatCustomFields(leadData, customFieldDefs);
+  const customFieldArray = buildMergedCustomFields(leadData, customFieldDefs, []);
   const emailVal = String(leadData.email || leadData.Email || "");
 
   const savePayload = {
@@ -233,7 +285,9 @@ export async function createLead(
     Location: locationId,
     LocationId: locationId,
     Site: locationId,
-    CurrencyId: "049",
+    CurrencyId: currencyId,
+    WorkFlow: "6a3e3ff89b6e94694c113a08",
+    WorkflowId: "6a3e3ff89b6e94694c113a08",
     Phone: [
       { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: phoneNumber }
     ],
@@ -285,13 +339,13 @@ export async function createLead(
 }
 
 /**
- * Updates an existing Lead record in TEB Cloud.
+ * Updates an existing Lead record in TEB Cloud while PRESERVING ALL EXISTING NON-AUTOMATION FIELDS.
  */
 export async function updateLead(
   leadId: string,
   leadData: Record<string, unknown>,
   token: string,
-  existingRecord?: Record<string, unknown>
+  existingRecord: Record<string, unknown> = {}
 ): Promise<LeadOperationResult> {
   const hosts = getTebHosts();
   const updateUrl = `${hosts.MICRO}/gateway/Lead/SaveLeadDetail`;
@@ -299,38 +353,46 @@ export async function updateLead(
   const customFieldDefs = await getCustomFieldDefinitions(token, hosts);
   const locationId = await getDefaultLocationId(token, hosts);
 
-  const leadTitle = String(
-    leadData.name || leadData.Name || leadData.LeadName || existingRecord?.FullName || existingRecord?.LeadName || "Lead"
-  );
-  const phoneVal = cleanPhoneNumber(
-    String(leadData.phone || leadData.Phone || leadData.mobile || leadData.phoneNumber || leadData.waId || existingRecord?.phone || existingRecord?.Phone || "")
-  );
-  const emailVal = String(leadData.email || leadData.Email || existingRecord?.email || existingRecord?.Email || "");
+  // 1. Preserve existing System Fields
+  const existingFullName = String(existingRecord.FullName || existingRecord.LeadName || existingRecord.Name || "");
+  const existingCompany = String(existingRecord.CompanyName || "");
+  const existingCurrency = String(existingRecord.CurrencyId || "049");
+  const existingOwner = String(existingRecord.OwnerId || (Array.isArray(existingRecord.AssigneeId) ? existingRecord.AssigneeId[0] : "68ac22e2a608471805479fce"));
+  const existingWorkflow = String(existingRecord.WorkflowId || "6a3e3ff89b6e94694c113a08");
+  const existingStatus = String(existingRecord.StatusName || "NPD Discussion");
+  const existingPhones = Array.isArray(existingRecord.PhoneDetail) ? existingRecord.PhoneDetail : (Array.isArray(existingRecord.Phone) ? existingRecord.Phone : []);
+  const existingEmails = Array.isArray(existingRecord.EmailDetail) ? existingRecord.EmailDetail : (Array.isArray(existingRecord.Email) ? existingRecord.Email : []);
+  const existingCustomFields = Array.isArray(existingRecord.CustomField) ? existingRecord.CustomField : [];
 
-  const customFieldArray = formatCustomFields(leadData, customFieldDefs);
+  // 2. Build merged CustomFields array (preserving non-automation custom fields)
+  const mergedCustomFields = buildMergedCustomFields(leadData, customFieldDefs, existingCustomFields);
 
+  // 3. Keep existing FullName/Company unless explicitly provided in incoming payload
+  const finalTitle = leadData.name || leadData.Name || leadData.LeadName || existingFullName || "Lead";
+  const finalCompany = leadData.company || leadData.CompanyName || existingCompany;
+
+  // 4. Construct SaveLeadDetail payload preserving all un-edited system fields
   const savePayload = {
+    ...existingRecord, // Preserve all un-edited raw fields
     Id: leadId,
     LeadId: leadId,
-    FullName: leadTitle,
-    LeadName: leadTitle,
-    CompanyName: String(leadData.company || leadData.CompanyName || existingRecord?.CompanyName || ""),
+    FullName: finalTitle,
+    LeadName: finalTitle,
+    CompanyName: finalCompany,
     Location: locationId,
     LocationId: locationId,
     Site: locationId,
-    CurrencyId: String(existingRecord?.CurrencyId || "049"),
-    Owner: String(existingRecord?.OwnerId || (Array.isArray(existingRecord?.AssigneeId) ? existingRecord.AssigneeId[0] : "68ac22e2a608471805479fce")),
-    OwnerId: String(existingRecord?.OwnerId || (Array.isArray(existingRecord?.AssigneeId) ? existingRecord.AssigneeId[0] : "68ac22e2a608471805479fce")),
-    WorkFlow: String(existingRecord?.WorkflowId || "6a3e3ff89b6e94694c113a08"),
-    WorkflowId: String(existingRecord?.WorkflowId || "6a3e3ff89b6e94694c113a08"),
-    StatusName: String(existingRecord?.StatusName || "NPD Discussion"),
-    Phone: [
-      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: phoneVal }
+    CurrencyId: existingCurrency,
+    Owner: existingOwner,
+    OwnerId: existingOwner,
+    WorkFlow: existingWorkflow,
+    WorkflowId: existingWorkflow,
+    StatusName: existingStatus,
+    Phone: existingPhones.length > 0 ? existingPhones : [
+      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: cleanPhoneNumber(String(leadData.phone || leadData.phoneNumber || leadData.waId || "")) }
     ],
-    Email: emailVal ? [
-      { Title: "Work", Icon: "mat_outline:email", Type: "EMAIL", Value: emailVal }
-    ] : [],
-    CustomField: customFieldArray,
+    Email: existingEmails,
+    CustomField: mergedCustomFields,
   };
 
   const headers = {
