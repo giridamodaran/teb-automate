@@ -33,7 +33,11 @@ export function cleanPhoneNumber(phone: string): string {
  * Builds a TEB-compatible CustomFields array from dynamic WATI attributes.
  */
 export function formatCustomFields(leadData: Record<string, unknown>) {
-  const reserved = new Set(["name", "Name", "LeadName", "title", "Title", "phone", "Phone", "mobile", "Mobile", "phoneNumber", "waId", "email", "Email", "secretKey"]);
+  const reserved = new Set([
+    "name", "Name", "LeadName", "title", "Title",
+    "phone", "Phone", "mobile", "Mobile", "phoneNumber", "waId",
+    "email", "Email", "secretKey"
+  ]);
   const customFields: Array<{ Code: string; DbFieldName: string; Value: unknown }> = [];
   
   for (const [key, value] of Object.entries(leadData)) {
@@ -62,22 +66,7 @@ export async function searchLeadByPhone(
     throw new Error("Phone number is required for lead search.");
   }
 
-  const searchUrl = `${hosts.DYNAMIC}/api/dynamic/FnGetGridFilterData`;
-
-  const searchPayload = {
-    ModuleCode: "LeadManagement",
-    ScreenCode: "MANAGE",
-    SearchText: cleanedPhone,
-    Filters: [
-      {
-        DbFieldName: "phone",
-        Value: cleanedPhone,
-        Operator: "contains",
-      },
-    ],
-    PageNumber: 1,
-    PageSize: 10,
-  };
+  const searchUrl = `${hosts.MICRO}/gateway/Lead/GetLeads`;
 
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -93,7 +82,11 @@ export async function searchLeadByPhone(
     const res = await fetch(searchUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify(searchPayload),
+      body: JSON.stringify({
+        SearchText: cleanedPhone,
+        PageNumber: 1,
+        PageSize: 10,
+      }),
       cache: "no-store",
     });
 
@@ -115,7 +108,7 @@ export async function searchLeadByPhone(
             leadCode: String(match.LeadCode || match.Code || match.code || ""),
             phone: String(match.phone || match.Phone || match.MobileNumber || cleanedPhone),
             email: String(match.email || match.Email || ""),
-            title: String(match.Title || match.Name || match.LeadName || ""),
+            title: String(match.Title || match.Name || match.LeadName || match.FullName || ""),
             rawRecord: match,
           };
         }
@@ -133,16 +126,29 @@ async function searchLeadFallback(
   token: string,
   hosts: Record<string, string>
 ): Promise<LeadSearchResult | null> {
-  const fallbackUrl = `${hosts.DYNAMIC}/FnGetFormDetail()?$filter=contains(phone, '${cleanedPhone}') or contains(mobile, '${cleanedPhone}')`;
+  const fallbackUrl = `${hosts.DYNAMIC}/api/dynamic/FnGetGridFilterData`;
 
   const headers = {
     Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
     Accept: "application/json",
     Type: "WEB",
   };
 
   try {
-    const res = await fetch(fallbackUrl, { method: "GET", headers, cache: "no-store" });
+    const res = await fetch(fallbackUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        ModuleCode: "LeadManagement",
+        ScreenCode: "MANAGE",
+        SearchText: cleanedPhone,
+        PageNumber: 1,
+        PageSize: 10,
+      }),
+      cache: "no-store",
+    });
+
     if (!res.ok) return null;
     const data = await res.json();
     const items = extractLeadItems(data);
@@ -157,7 +163,7 @@ async function searchLeadFallback(
       leadCode: String(match.LeadCode || match.Code || ""),
       phone: String(match.phone || match.Phone || cleanedPhone),
       email: String(match.email || match.Email || ""),
-      title: String(match.Title || match.Name || ""),
+      title: String(match.Title || match.Name || match.FullName || ""),
       rawRecord: match,
     };
   } catch {
@@ -180,7 +186,7 @@ function extractLeadItems(payload: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Creates a NEW Lead record in TEB Cloud when no matching phone number is found.
+ * Creates a NEW Lead record in TEB Cloud using live AcAddDetail API.
  */
 export async function createLead(
   phoneNumber: string,
@@ -188,7 +194,7 @@ export async function createLead(
   token: string
 ): Promise<LeadOperationResult> {
   const hosts = getTebHosts();
-  const createUrl = `${hosts.DYNAMIC}/api/dynamic/FnSaveLead`;
+  const createUrl = `${hosts.DYNAMIC}/AcAddDetail`;
 
   const leadTitle = String(
     leadData.name || leadData.Name || leadData.LeadName || leadData.title || leadData.Title || `New Lead (${phoneNumber})`
@@ -196,7 +202,7 @@ export async function createLead(
 
   const customFieldsArray = formatCustomFields(leadData);
 
-  const createPayload = {
+  const innerPayload = {
     Title: leadTitle,
     LeadName: leadTitle,
     Name: leadTitle,
@@ -205,6 +211,14 @@ export async function createLead(
     phone: phoneNumber,
     CustomFields: customFieldsArray,
     ...leadData,
+  };
+
+  const outerPayload = {
+    data: {
+      Module: "LeadManagement",
+      Code: "LEAD",
+      Data: JSON.stringify(innerPayload),
+    },
   };
 
   const headers = {
@@ -220,83 +234,33 @@ export async function createLead(
   const res = await fetch(createUrl, {
     method: "POST",
     headers,
-    body: JSON.stringify(createPayload),
+    body: JSON.stringify(outerPayload),
     cache: "no-store",
   });
 
   if (!res.ok) {
     const errText = await res.text();
-    return createLeadFallback(phoneNumber, leadData, token, hosts, errText);
+    return {
+      success: false,
+      leadId: "",
+      isNewLead: true,
+      message: `Failed to create lead (${res.status}): ${errText}`,
+      fields: innerPayload,
+    };
   }
 
   const responseJson = await res.json().catch(() => ({}));
-  const newId = String(responseJson?.Data?.Id || responseJson?.Data?.LeadId || responseJson?.Id || "NEW_LEAD");
+  const newId = String(
+    responseJson?.Data?.Id || responseJson?.Data?.LeadId || responseJson?.value || responseJson?.Id || "NEW_LEAD"
+  );
 
   return {
     success: true,
     leadId: newId,
     isNewLead: true,
     message: "New Lead created successfully in TEB Cloud",
-    fields: createPayload,
+    fields: innerPayload,
     rawResponse: responseJson,
-  };
-}
-
-async function createLeadFallback(
-  phoneNumber: string,
-  leadData: Record<string, unknown>,
-  token: string,
-  hosts: Record<string, string>,
-  primaryError: string
-): Promise<LeadOperationResult> {
-  const fallbackUrl = `${hosts.USER}/api/Lead/AcSaveLead`;
-
-  const customFieldsArray = formatCustomFields(leadData);
-
-  const createPayload = {
-    Phone: phoneNumber,
-    MobileNumber: phoneNumber,
-    CustomFields: customFieldsArray,
-    ...leadData,
-  };
-
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    Type: "WEB",
-  };
-
-  try {
-    const res = await fetch(fallbackUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(createPayload),
-      cache: "no-store",
-    });
-
-    if (res.ok) {
-      const json = await res.json().catch(() => ({}));
-      const newId = String(json?.Data?.Id || json?.Data?.LeadId || json?.Id || "NEW_LEAD");
-      return {
-        success: true,
-        leadId: newId,
-        isNewLead: true,
-        message: "New Lead created via fallback endpoint",
-        fields: createPayload,
-        rawResponse: json,
-      };
-    }
-  } catch {
-    // Ignore fallback error
-  }
-
-  return {
-    success: false,
-    leadId: "",
-    isNewLead: true,
-    message: `Failed to create new lead: ${primaryError}`,
-    fields: createPayload,
   };
 }
 
@@ -309,15 +273,24 @@ export async function updateLead(
   token: string
 ): Promise<LeadOperationResult> {
   const hosts = getTebHosts();
-  const updateUrl = `${hosts.DYNAMIC}/api/dynamic/FnUpdateLead`;
+  const updateUrl = `${hosts.DYNAMIC}/AcAddDetail`;
 
   const customFieldsArray = formatCustomFields(leadData);
 
-  const updatePayload = {
+  const innerPayload = {
     Id: leadId,
     LeadId: leadId,
     CustomFields: customFieldsArray,
     ...leadData,
+  };
+
+  const outerPayload = {
+    data: {
+      Module: "LeadManagement",
+      Code: "LEAD",
+      PrimaryKey: leadId,
+      Data: JSON.stringify(innerPayload),
+    },
   };
 
   const headers = {
@@ -333,13 +306,19 @@ export async function updateLead(
   const res = await fetch(updateUrl, {
     method: "POST",
     headers,
-    body: JSON.stringify(updatePayload),
+    body: JSON.stringify(outerPayload),
     cache: "no-store",
   });
 
   if (!res.ok) {
     const errText = await res.text();
-    return updateLeadFallback(leadId, leadData, token, hosts, errText);
+    return {
+      success: false,
+      leadId,
+      isNewLead: false,
+      message: `Failed to update lead (${res.status}): ${errText}`,
+      fields: leadData,
+    };
   }
 
   const responseJson = await res.json().catch(() => ({}));
@@ -354,69 +333,19 @@ export async function updateLead(
   };
 }
 
-async function updateLeadFallback(
-  leadId: string,
-  leadData: Record<string, unknown>,
-  token: string,
-  hosts: Record<string, string>,
-  primaryError: string
-): Promise<LeadOperationResult> {
-  const fallbackUrl = `${hosts.USER}/api/Lead/AcUpdateLead`;
-
-  const customFieldsArray = formatCustomFields(leadData);
-
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    Type: "WEB",
-  };
-
-  try {
-    const res = await fetch(fallbackUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ Id: leadId, CustomFields: customFieldsArray, ...leadData }),
-      cache: "no-store",
-    });
-
-    if (res.ok) {
-      const json = await res.json().catch(() => ({}));
-      return {
-        success: true,
-        leadId,
-        isNewLead: false,
-        message: "Lead updated via fallback endpoint",
-        fields: leadData,
-        rawResponse: json,
-      };
-    }
-  } catch {
-    // Ignore fallback error
-  }
-
-  return {
-    success: false,
-    leadId,
-    isNewLead: false,
-    message: `Failed to update lead: ${primaryError}`,
-    fields: leadData,
-  };
-}
-
 /**
  * Main Orchestrator for Incoming Webhook Execution with Supabase Staging.
  */
 export async function executeLeadWebhookAutomation(payload: Record<string, unknown>) {
   const rawPhone = String(
-    payload.phone || payload.Phone || payload.mobile || payload.Mobile || payload.phoneNumber || ""
+    payload.phone || payload.Phone || payload.mobile || payload.Mobile || payload.phoneNumber || payload.waId || ""
   );
 
   if (!rawPhone) {
     return {
       success: false,
       status: 400,
-      error: "Missing required 'phone' or 'phoneNumber' parameter in webhook body payload.",
+      error: "Missing required 'phone' or 'phoneNumber' or 'waId' parameter in webhook body payload.",
     };
   }
 
