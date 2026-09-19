@@ -1,12 +1,12 @@
 import { executeLeadWebhookAutomation } from "../src/lib/automation/teb-lead-service";
 
-async function runLiveTest() {
-  console.log("🚀 Running live TEB Lead push test with credentials from .env.local...");
+async function runTestExecution() {
+  console.log("🚀 Testing full TEB Lead webhook execution with SaveLeadDetail DTO...");
 
-  const dummyPayload = {
+  const payload = {
     phone: "+919876543210",
-    name: "Test Lead - WATI Bot Dummy",
-    email: "dummy.lead@example.com",
+    name: "Test Lead - WATI Bot Verified",
+    email: "test.wati.lead@example.com",
     product: "Water Heater Heat Pump 300L",
     electricsupply: "3 Phase 415V",
     family_size: "4-6 Members",
@@ -20,10 +20,10 @@ async function runLiveTest() {
     price_confirmation_heat: "Price Approved",
   };
 
-  const result = await executeLeadWebhookAutomation(dummyPayload);
+  const res = await executeLeadWebhookAutomation(payload);
   console.log("\n==========================================");
-  console.log("SUCCESS RESULT:", JSON.stringify(result, null, 2));
+  console.log("EXECUTION RESULT:", JSON.stringify(res, null, 2));
   console.log("==========================================");
 }
 
-runLiveTest();
+runTestExecution();

@@ -29,23 +29,94 @@ export function cleanPhoneNumber(phone: string): string {
   return phone.replace(/[^0-9+]/g, "").trim();
 }
 
+let cachedCustomFieldDefs: any[] | null = null;
+let cachedDefaultLocationId = "";
+
 /**
- * Builds a TEB-compatible CustomFields array from dynamic WATI attributes.
+ * Fetches TEB Custom Field definitions for LeadManagement.
  */
-export function formatCustomFields(leadData: Record<string, unknown>) {
+async function getCustomFieldDefinitions(token: string, hosts: Record<string, string>): Promise<any[]> {
+  if (cachedCustomFieldDefs && cachedCustomFieldDefs.length > 0) {
+    return cachedCustomFieldDefs;
+  }
+  try {
+    const res = await fetch(`${hosts.MICRO}/gateway/customField/getcustomfield`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Type: "WEB",
+      },
+      body: JSON.stringify({ ModuleCode: "LeadManagement", Module: "LeadManagement", Code: "LEAD" }),
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const json = await res.json();
+      cachedCustomFieldDefs = json.Data || [];
+      return cachedCustomFieldDefs || [];
+    }
+  } catch {
+    // Ignore fetch error
+  }
+  return [];
+}
+
+/**
+ * Fetches default Location ID from TEB Cloud.
+ */
+async function getDefaultLocationId(token: string, hosts: Record<string, string>): Promise<string> {
+  if (cachedDefaultLocationId) return cachedDefaultLocationId;
+  try {
+    const res = await fetch(`${hosts.COMPANY}/FnGetLocation()`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        Type: "WEB",
+      },
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const list = json.value || json.Data || [];
+      const defLoc = list.find((item: any) => item.IsDefaultLocation) || list[0];
+      if (defLoc?.Id) {
+        cachedDefaultLocationId = String(defLoc.Id);
+        return cachedDefaultLocationId;
+      }
+    }
+  } catch {
+    // Ignore fetch error
+  }
+  return "68a41460b74ff993b1731077"; // Default fallback
+}
+
+/**
+ * Formats custom field objects for TEB SaveLeadDetail DTO.
+ */
+export function formatCustomFields(leadData: Record<string, unknown>, customFieldDefs: any[]) {
   const reserved = new Set([
-    "name", "Name", "LeadName", "title", "Title",
+    "name", "Name", "LeadName", "FullName", "title", "Title",
     "phone", "Phone", "mobile", "Mobile", "phoneNumber", "waId",
     "email", "Email", "secretKey"
   ]);
-  const customFields: Array<{ Code: string; DbFieldName: string; Value: unknown }> = [];
-  
+
+  const customFields: any[] = [];
   for (const [key, value] of Object.entries(leadData)) {
-    if (!reserved.has(key) && value !== undefined && value !== null) {
+    if (!reserved.has(key) && value !== undefined && value !== null && String(value).trim() !== "") {
+      const def = customFieldDefs.find(
+        (d) => d.ControlName === key || String(d.ControlName).toLowerCase() === key.toLowerCase()
+      );
       customFields.push({
+        Id: def?.Id || "",
+        CustomFieldId: def?.Id || "",
         Code: key,
-        DbFieldName: key.toLowerCase(),
-        Value: value,
+        ControlName: key,
+        PropertyName: key,
+        Label: def?.Title || key,
+        Value: String(value),
+        ControlType: def?.ControlType || "TEXT",
       });
     }
   }
@@ -115,60 +186,10 @@ export async function searchLeadByPhone(
       }
     }
   } catch {
-    // Continue to fallback search
+    // Ignore error and try fallback
   }
 
-  return searchLeadFallback(cleanedPhone, token, hosts);
-}
-
-async function searchLeadFallback(
-  cleanedPhone: string,
-  token: string,
-  hosts: Record<string, string>
-): Promise<LeadSearchResult | null> {
-  const fallbackUrl = `${hosts.DYNAMIC}/api/dynamic/FnGetGridFilterData`;
-
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    Type: "WEB",
-  };
-
-  try {
-    const res = await fetch(fallbackUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        ModuleCode: "LeadManagement",
-        ScreenCode: "MANAGE",
-        SearchText: cleanedPhone,
-        PageNumber: 1,
-        PageSize: 10,
-      }),
-      cache: "no-store",
-    });
-
-    if (!res.ok) return null;
-    const data = await res.json();
-    const items = extractLeadItems(data);
-    if (!items || items.length === 0) return null;
-
-    const match = items[0];
-    const leadId = String(match.Id || match.id || match.LeadId || "");
-    if (!leadId) return null;
-
-    return {
-      id: leadId,
-      leadCode: String(match.LeadCode || match.Code || ""),
-      phone: String(match.phone || match.Phone || cleanedPhone),
-      email: String(match.email || match.Email || ""),
-      title: String(match.Title || match.Name || match.FullName || ""),
-      rawRecord: match,
-    };
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function extractLeadItems(payload: unknown): Record<string, unknown>[] {
@@ -186,7 +207,7 @@ function extractLeadItems(payload: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Creates a NEW Lead record in TEB Cloud using live AcAddDetail API.
+ * Creates a NEW Lead record in TEB Cloud using live SaveLeadDetail API.
  */
 export async function createLead(
   phoneNumber: string,
@@ -194,31 +215,32 @@ export async function createLead(
   token: string
 ): Promise<LeadOperationResult> {
   const hosts = getTebHosts();
-  const createUrl = `${hosts.DYNAMIC}/AcAddDetail`;
+  const createUrl = `${hosts.MICRO}/gateway/Lead/SaveLeadDetail`;
+
+  const customFieldDefs = await getCustomFieldDefinitions(token, hosts);
+  const locationId = await getDefaultLocationId(token, hosts);
 
   const leadTitle = String(
     leadData.name || leadData.Name || leadData.LeadName || leadData.title || leadData.Title || `New Lead (${phoneNumber})`
   );
 
-  const customFieldsArray = formatCustomFields(leadData);
+  const customFieldArray = formatCustomFields(leadData, customFieldDefs);
+  const emailVal = String(leadData.email || leadData.Email || "");
 
-  const innerPayload = {
-    Title: leadTitle,
+  const savePayload = {
+    FullName: leadTitle,
     LeadName: leadTitle,
-    Name: leadTitle,
-    Phone: phoneNumber,
-    MobileNumber: phoneNumber,
-    phone: phoneNumber,
-    CustomFields: customFieldsArray,
-    ...leadData,
-  };
-
-  const outerPayload = {
-    data: {
-      Module: "LeadManagement",
-      Code: "LEAD",
-      Data: JSON.stringify(innerPayload),
-    },
+    Location: locationId,
+    LocationId: locationId,
+    Site: locationId,
+    CurrencyId: "049",
+    Phone: [
+      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: phoneNumber }
+    ],
+    Email: emailVal ? [
+      { Title: "Work", Icon: "mat_outline:email", Type: "EMAIL", Value: emailVal }
+    ] : [],
+    CustomField: customFieldArray,
   };
 
   const headers = {
@@ -234,7 +256,7 @@ export async function createLead(
   const res = await fetch(createUrl, {
     method: "POST",
     headers,
-    body: JSON.stringify(outerPayload),
+    body: JSON.stringify(savePayload),
     cache: "no-store",
   });
 
@@ -245,52 +267,70 @@ export async function createLead(
       leadId: "",
       isNewLead: true,
       message: `Failed to create lead (${res.status}): ${errText}`,
-      fields: innerPayload,
+      fields: savePayload,
     };
   }
 
-  const responseJson = await res.json().catch(() => ({}));
-  const newId = String(
-    responseJson?.Data?.Id || responseJson?.Data?.LeadId || responseJson?.value || responseJson?.Id || "NEW_LEAD"
-  );
+  const responseJson = await res.json();
+  const newId = String(responseJson?.Data?.Id || responseJson?.Data?.LeadId || "NEW_LEAD");
 
   return {
-    success: true,
+    success: responseJson?.Succeeded !== false,
     leadId: newId,
     isNewLead: true,
-    message: "New Lead created successfully in TEB Cloud",
-    fields: innerPayload,
+    message: responseJson?.Messages?.[0] || "New Lead created successfully in TEB Cloud",
+    fields: savePayload,
     rawResponse: responseJson,
   };
 }
 
 /**
- * Updates an existing Lead record in TEB.
+ * Updates an existing Lead record in TEB Cloud.
  */
 export async function updateLead(
   leadId: string,
   leadData: Record<string, unknown>,
-  token: string
+  token: string,
+  existingRecord?: Record<string, unknown>
 ): Promise<LeadOperationResult> {
   const hosts = getTebHosts();
-  const updateUrl = `${hosts.DYNAMIC}/AcAddDetail`;
+  const updateUrl = `${hosts.MICRO}/gateway/Lead/SaveLeadDetail`;
 
-  const customFieldsArray = formatCustomFields(leadData);
+  const customFieldDefs = await getCustomFieldDefinitions(token, hosts);
+  const locationId = await getDefaultLocationId(token, hosts);
 
-  const innerPayload = {
+  const leadTitle = String(
+    leadData.name || leadData.Name || leadData.LeadName || existingRecord?.FullName || existingRecord?.LeadName || "Lead"
+  );
+  const phoneVal = cleanPhoneNumber(
+    String(leadData.phone || leadData.Phone || leadData.mobile || leadData.phoneNumber || leadData.waId || existingRecord?.phone || existingRecord?.Phone || "")
+  );
+  const emailVal = String(leadData.email || leadData.Email || existingRecord?.email || existingRecord?.Email || "");
+
+  const customFieldArray = formatCustomFields(leadData, customFieldDefs);
+
+  const savePayload = {
     Id: leadId,
     LeadId: leadId,
-    CustomFields: customFieldsArray,
-    ...leadData,
-  };
-
-  const outerPayload = {
-    data: {
-      Module: "LeadManagement",
-      Code: "LEAD",
-      PrimaryKey: leadId,
-      Data: JSON.stringify(innerPayload),
-    },
+    FullName: leadTitle,
+    LeadName: leadTitle,
+    CompanyName: String(leadData.company || leadData.CompanyName || existingRecord?.CompanyName || ""),
+    Location: locationId,
+    LocationId: locationId,
+    Site: locationId,
+    CurrencyId: String(existingRecord?.CurrencyId || "049"),
+    Owner: String(existingRecord?.OwnerId || (Array.isArray(existingRecord?.AssigneeId) ? existingRecord.AssigneeId[0] : "68ac22e2a608471805479fce")),
+    OwnerId: String(existingRecord?.OwnerId || (Array.isArray(existingRecord?.AssigneeId) ? existingRecord.AssigneeId[0] : "68ac22e2a608471805479fce")),
+    WorkFlow: String(existingRecord?.WorkflowId || "6a3e3ff89b6e94694c113a08"),
+    WorkflowId: String(existingRecord?.WorkflowId || "6a3e3ff89b6e94694c113a08"),
+    StatusName: String(existingRecord?.StatusName || "NPD Discussion"),
+    Phone: [
+      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: phoneVal }
+    ],
+    Email: emailVal ? [
+      { Title: "Work", Icon: "mat_outline:email", Type: "EMAIL", Value: emailVal }
+    ] : [],
+    CustomField: customFieldArray,
   };
 
   const headers = {
@@ -306,7 +346,7 @@ export async function updateLead(
   const res = await fetch(updateUrl, {
     method: "POST",
     headers,
-    body: JSON.stringify(outerPayload),
+    body: JSON.stringify(savePayload),
     cache: "no-store",
   });
 
@@ -317,18 +357,18 @@ export async function updateLead(
       leadId,
       isNewLead: false,
       message: `Failed to update lead (${res.status}): ${errText}`,
-      fields: leadData,
+      fields: savePayload,
     };
   }
 
-  const responseJson = await res.json().catch(() => ({}));
+  const responseJson = await res.json();
 
   return {
-    success: true,
+    success: responseJson?.Succeeded !== false,
     leadId,
     isNewLead: false,
-    message: "Lead updated successfully in TEB Cloud",
-    fields: leadData,
+    message: responseJson?.Messages?.[0] || "Lead updated successfully in TEB Cloud",
+    fields: savePayload,
     rawResponse: responseJson,
   };
 }
@@ -364,7 +404,7 @@ export async function executeLeadWebhookAutomation(payload: Record<string, unkno
 
     // 4. Update Existing Lead or Create New Lead
     if (leadMatch) {
-      const updateResult = await updateLead(leadMatch.id, leadData, token);
+      const updateResult = await updateLead(leadMatch.id, leadData, token, leadMatch.rawRecord);
       if (updateResult.success) {
         await markLeadLogCompleted(supabaseLogId, leadMatch.id, "UPDATED_EXISTING_LEAD");
         return {
