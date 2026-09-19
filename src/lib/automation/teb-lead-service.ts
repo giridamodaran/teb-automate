@@ -29,6 +29,15 @@ export function cleanPhoneNumber(phone: string): string {
   return phone.replace(/[^0-9+]/g, "").trim();
 }
 
+export function extractNationalPhoneDigits(phone: string): string {
+  if (!phone) return "";
+  let digits = phone.replace(/[^0-9]/g, "").trim();
+  if (digits.startsWith("91") && digits.length > 5) {
+    digits = digits.slice(2);
+  }
+  return digits;
+}
+
 let cachedCustomFieldDefs: any[] | null = null;
 let cachedDefaultLocationId = "";
 let cachedDefaultCurrencyId = "";
@@ -175,16 +184,17 @@ export function buildMergedCustomFields(
 }
 
 /**
- * Searches TEB for a Lead matching the provided phone number.
+ * Searches TEB for a Lead matching the provided phone number (without country code).
  */
 export async function searchLeadByPhone(
   phoneNumber: string,
   token: string
 ): Promise<LeadSearchResult | null> {
   const hosts = getTebHosts();
-  const cleanedPhone = cleanPhoneNumber(phoneNumber);
-  
-  if (!cleanedPhone) {
+  const searchDigits = extractNationalPhoneDigits(phoneNumber);
+  const rawDigits = phoneNumber.replace(/[^0-9]/g, "").trim();
+
+  if (!searchDigits && !rawDigits) {
     throw new Error("Phone number is required for lead search.");
   }
 
@@ -200,44 +210,70 @@ export async function searchLeadByPhone(
     ApiHitDate: new Date().toString(),
   };
 
-  try {
-    const res = await fetch(searchUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        SearchText: cleanedPhone,
-        PageNumber: 1,
-        PageSize: 10,
-      }),
-      cache: "no-store",
-    });
+  const searchTerms = Array.from(new Set([searchDigits, rawDigits])).filter(Boolean);
 
-    if (res.ok) {
-      const payload = await res.json();
-      const items = extractLeadItems(payload);
-      if (items && items.length > 0) {
-        const match = items.find((item: Record<string, unknown>) => {
-          const itemPhone = cleanPhoneNumber(
-            String(item.phone || item.Phone || item.Mobile || item.mobile || item.MobileNumber || "")
+  for (const term of searchTerms) {
+    try {
+      const res = await fetch(searchUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          Data: {
+            IsActive: true,
+            FullTextSearch: term,
+          },
+          PageNumber: 0,
+          PageSize: 50,
+        }),
+        cache: "no-store",
+      });
+
+      if (res.ok) {
+        const payload = await res.json();
+        const items = extractLeadItems(payload);
+
+        for (const item of items) {
+          const phoneDetails = Array.isArray(item.PhoneDetail)
+            ? item.PhoneDetail
+            : Array.isArray(item.Phone)
+            ? item.Phone
+            : [];
+
+          const itemPhones: string[] = [];
+          for (const p of phoneDetails) {
+            if (p?.Value || p?.value) {
+              itemPhones.push(String(p.Value || p.value).replace(/[^0-9]/g, ""));
+            }
+          }
+          if (item.phone) itemPhones.push(String(item.phone).replace(/[^0-9]/g, ""));
+          if (item.Phone && typeof item.Phone === "string") itemPhones.push(item.Phone.replace(/[^0-9]/g, ""));
+
+          const isMatch = itemPhones.some(
+            (pDigits) =>
+              pDigits === searchDigits ||
+              pDigits === rawDigits ||
+              (searchDigits.length >= 5 && pDigits.includes(searchDigits)) ||
+              (searchDigits.length >= 5 && searchDigits.includes(pDigits))
           );
-          return itemPhone.includes(cleanedPhone) || cleanedPhone.includes(itemPhone);
-        }) || items[0];
 
-        const leadId = String(match.Id || match.id || match.LeadId || match.leadId || match.ID || "");
-        if (leadId) {
-          return {
-            id: leadId,
-            leadCode: String(match.LeadCode || match.Code || match.code || ""),
-            phone: String(match.phone || match.Phone || match.MobileNumber || cleanedPhone),
-            email: String(match.email || match.Email || ""),
-            title: String(match.Title || match.Name || match.LeadName || match.FullName || ""),
-            rawRecord: match,
-          };
+          if (isMatch) {
+            const leadId = String(item.Id || item.id || item.LeadId || item.leadId || "");
+            if (leadId) {
+              return {
+                id: leadId,
+                leadCode: String(item.LeadCode || item.Code || item.code || ""),
+                phone: String(item.phone || searchDigits),
+                email: String(item.email || item.Email || ""),
+                title: String(item.Title || item.Name || item.LeadName || item.FullName || ""),
+                rawRecord: item,
+              };
+            }
+          }
         }
       }
+    } catch {
+      // Continue search
     }
-  } catch {
-    // Ignore error
   }
 
   return null;
@@ -286,10 +322,12 @@ export async function createLead(
     LocationId: locationId,
     Site: locationId,
     CurrencyId: currencyId,
-    WorkFlow: "6a3e3ff89b6e94694c113a08",
-    WorkflowId: "6a3e3ff89b6e94694c113a08",
+    Owner: "68ac22e2a608471805479fce",
+    OwnerId: "68ac22e2a608471805479fce",
+    WorkFlow: "695e64cf510a06f8e3709363",
+    WorkflowId: "695e64cf510a06f8e3709363",
     Phone: [
-      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: phoneNumber }
+      { Title: "Work", Country: "+91", Icon: "mat_outline:call", Type: "PHONE", Value: extractNationalPhoneDigits(phoneNumber) || phoneNumber }
     ],
     Email: emailVal ? [
       { Title: "Work", Icon: "mat_outline:email", Type: "EMAIL", Value: emailVal }
