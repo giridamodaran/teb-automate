@@ -214,6 +214,9 @@ export async function searchLeadByPhone(
     new Set([searchDigits, rawDigits, phoneNumber.trim(), `+${rawDigits}`])
   ).filter(Boolean);
 
+  const matchedItems: Record<string, unknown>[] = [];
+  const matchedIds = new Set<string>();
+
   for (const term of searchTerms) {
     try {
       const res = await fetch(searchUrl, {
@@ -235,6 +238,9 @@ export async function searchLeadByPhone(
         const items = extractLeadItems(payload);
 
         for (const item of items) {
+          const leadId = String(item.Id || item.id || item.LeadId || item.leadId || "");
+          if (!leadId || matchedIds.has(leadId)) continue;
+
           const phoneDetails = Array.isArray(item.PhoneDetail)
             ? item.PhoneDetail
             : Array.isArray(item.Phone)
@@ -259,17 +265,8 @@ export async function searchLeadByPhone(
           );
 
           if (isMatch) {
-            const leadId = String(item.Id || item.id || item.LeadId || item.leadId || "");
-            if (leadId) {
-              return {
-                id: leadId,
-                leadCode: String(item.LeadCode || item.Code || item.code || ""),
-                phone: String(item.phone || searchDigits),
-                email: String(item.email || item.Email || ""),
-                title: String(item.Title || item.Name || item.LeadName || item.FullName || ""),
-                rawRecord: item,
-              };
-            }
+            matchedIds.add(leadId);
+            matchedItems.push(item);
           }
         }
       }
@@ -278,7 +275,26 @@ export async function searchLeadByPhone(
     }
   }
 
-  return null;
+  if (matchedItems.length === 0) return null;
+
+  // Sort matched leads descending by ModifiedDate / CreatedDate (latest modified record first)
+  matchedItems.sort((a, b) => {
+    const timeA = new Date(String(a.ModifiedDate || a.CreatedDate || 0)).getTime();
+    const timeB = new Date(String(b.ModifiedDate || b.CreatedDate || 0)).getTime();
+    return timeB - timeA;
+  });
+
+  const bestMatch = matchedItems[0];
+  const bestId = String(bestMatch.Id || bestMatch.id || bestMatch.LeadId || bestMatch.leadId || "");
+
+  return {
+    id: bestId,
+    leadCode: String(bestMatch.LeadCode || bestMatch.Code || bestMatch.code || ""),
+    phone: String(bestMatch.phone || searchDigits),
+    email: String(bestMatch.email || bestMatch.Email || ""),
+    title: String(bestMatch.Title || bestMatch.Name || bestMatch.LeadName || bestMatch.FullName || ""),
+    rawRecord: bestMatch,
+  };
 }
 
 function extractLeadItems(payload: unknown): Record<string, unknown>[] {
